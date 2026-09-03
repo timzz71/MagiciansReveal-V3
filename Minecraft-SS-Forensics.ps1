@@ -1,152 +1,1085 @@
-[CmdletBinding(SupportsShouldProcess = $false)]
-param(
-    [string]$InstancePath,
-    [string]$OutputPath = (Join-Path (Get-Location) 'Minecraft-SS-Forensics-Output'),
-    [string]$EvidencePath,
-    [switch]$Offline = $true,
-    [switch]$DeepScan,
-    [switch]$HashFiles,
-    [switch]$Quiet,
-    [switch]$SelfTest,
-    [switch]$Help,
-    [string]$ConfigPath,
-    [switch]$Authorized
-)
-
 <#
 .SYNOPSIS
-    Read-only Minecraft anti-cheat forensic scanner for authorized server staff.
+    Minecraft-SS-Forensics.ps1 – Read‑only forensic scanner for Minecraft anti‑cheat investigations.
+
 .DESCRIPTION
-    Collects local Minecraft, launcher, process, file, signature, timeline, archive,
-    string, URL, and Windows-evidence metadata. It never contacts extracted domains,
-    executes payloads, modifies evidence, deletes files, or assigns guilt. Every
-    finding requires analyst review. The indicator/configuration tables below are
-    intentionally editable and are used only for offline comparison.
+    Scans Minecraft instances, mods, logs, and system artifacts for indicators of cheating,
+    injection, obfuscation, and self‑destruct evidence. Designed for authorized server‑staff
+    use only. Produces HTML, JSON, CSV, and summary reports.
+
+    All scanning is read‑only. No files are modified, deleted, quarantined, or executed.
+    No network calls are made. Evidence is preserved with timestamps and metadata.
+
+    This script is self‑contained – no external dependencies required.
+
 .PARAMETER InstancePath
-    Optional Minecraft/launcher root. If omitted, common local locations are searched.
+    Path to a specific Minecraft instance (e.g., .minecraft folder). If not provided, the
+    script will search common launcher locations.
+
 .PARAMETER OutputPath
-    Directory receiving the six deterministic report files.
+    Folder where reports will be saved. Defaults to .\Forensics_Report_<timestamp>.
+
 .PARAMETER EvidencePath
-    Additional read-only evidence root to inspect.
+    Optional path to an external evidence folder (e.g., a disk image or copied user data)
+    to scan instead of the live system.
+
 .PARAMETER Offline
-    Kept for explicitness; this script is offline-only and never performs network I/O.
+    Switch to force offline mode – no network requests, DNS resolutions, or external calls.
+    This is the default behavior; the switch is included for clarity.
+
 .PARAMETER DeepScan
-    Scans more text and archive/class content within configured limits.
+    Perform a more thorough scan (e.g., scan all files in archives, check USN Journal,
+    prefetch, etc.). This may take longer and requires administrator privileges for some
+    system artifacts.
+
 .PARAMETER HashFiles
-    Adds SHA-256 hashes for relevant files.
-.PARAMETER ConfigPath
-    Optional analyst-maintained JSON configuration merged with embedded defaults.
-.PARAMETER Authorized
-    Required explicit authorization confirmation.
-.PARAMETER SelfTest
-    Creates harmless temporary fixtures, scans them, verifies output schemas, then removes fixtures.
+    Calculate SHA‑256 hashes for relevant files (mods, executables, etc.) and include them
+    in the report.
+
+.PARAMETER Help
+    Display this help message.
+
 .EXAMPLE
-    .\Minecraft-SS-Forensics.ps1 -Authorized -OutputPath 'D:\Cases\MC-001' -HashFiles -DeepScan
+    .\Minecraft-SS-Forensics.ps1 -InstancePath "C:\Users\Player\.minecraft" -OutputPath ".\Report"
+
+    Scans the specified Minecraft instance and saves reports to the current folder.
+
 .EXAMPLE
-    .\Minecraft-SS-Forensics.ps1 -SelfTest -Authorized
+    .\Minecraft-SS-Forensics.ps1 -Offline -DeepScan -HashFiles
+
+    Scans all discovered instances with deep scanning and hashing, offline.
+
+.NOTES
+    Tool:    MagiciansReveal V3
+    Author:  Tim$erz
+    Version: 3.0.1
+    License: MIT (for authorized use only)
+    Disclaimer: This tool provides indicators for analyst review. Findings are not
+               conclusive proof of cheating and require human verification.
 #>
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+[CmdletBinding()]
+param(
+    [string]$InstancePath,
+    [string]$OutputPath,
+    [string]$EvidencePath,
+    [switch]$Offline,
+    [switch]$DeepScan,
+    [switch]$HashFiles,
+    [switch]$Help
+)
 
-# ========================= Editable offline configuration =========================
-$Config = [ordered]@{
-    CheatClients = @{
-        'LiquidBounce'=@('liquidbounce','liquid-bounce','liquid_bounce','lbnextgen'); 'LiquidBounce Nextgen'=@('liquidbounce nextgen','liquidbounce-nextgen','liquidbounce_nextgen','lbng')
-        'Wurst'=@('wurst','wurstclient'); 'Meteor'=@('meteor','meteorclient'); 'BleachHack'=@('bleachhack','bleach-hack','bleach_hack')
-        'Impact'=@('impact','impactclient'); 'Inertia'=@('inertia'); 'Aristois'=@('aristois'); 'Vape'=@('vape','v4pe'); 'Future'=@('futureclient','future')
-        'RusherHack'=@('rusherhack','rusher-hack'); 'Pyro'=@('pyroclient'); 'Boze'=@('boze'); 'Kami Blue'=@('kami blue','kami-blue','kami_blue','kamiblue')
-        'ThunderHack'=@('thunderhack','thunder-hack'); 'Raven'=@('ravenclient','raven'); 'Raven B+'=@('raven b+','raven-b+','ravenbplus','ravenb')
-        'Rise'=@('riseclient','rise'); 'Exhibition'=@('exhibition'); 'Sigma'=@('sigmaclient','sigma'); 'Wolfram'=@('wolfram'); 'FDP Client'=@('fdpclient','fdp-client','fdp_client')
-        'Tenacity'=@('tenacity'); 'Dortware'=@('dortware'); 'Astolfo'=@('astolfo'); 'Moon'=@('moonclient'); 'Novo'=@('novoclient'); 'Zeroday'=@('zeroday','zero-day')
-        'Whiteout'=@('whiteout'); 'Baritone'=@('baritone')
+if ($Help) {
+    Get-Help $MyInvocation.MyCommand.Path -Detailed
+    exit 0
+}
+
+#region Configuration (Editable)
+$script:Config = @{
+    # Cheat-client aliases (case-insensitive, normalized)
+    CheatClientAliases = @(
+        "LiquidBounce", "LiquidBounce Nextgen", "Wurst", "Meteor", "BleachHack", "Impact",
+        "Inertia", "Aristois", "Vape", "Future", "RusherHack", "Pyro", "Boze", "Kami Blue",
+        "ThunderHack", "Raven", "Raven B+", "Rise", "Exhibition", "Sigma", "Wolfram",
+        "FDP Client", "Tenacity", "Dortware", "Astolfo", "Moon", "Novo", "Zeroday",
+        "Whiteout", "Baritone",
+        # New aliases from user
+        "Doomsday", "DoomsdayClient", "doomsday", "VapeClient", "VapeLite", "vape.gg",
+        "MeteorClient", "meteorclient", "meteordevelopment", "WurstClient",
+        "SigmaClient", "Novoware", "GameSense", "OsirisClient", "CosmosClient",
+        "AzuraClient", "ArgonClient", "KryptonClient", "PrestigeClient", "FutureClient",
+        "Pandaware", "IntentClient", "Novoclient", "Hellion", "VirginClient",
+        "XenonClient", "GypsyClient", "Dqrkis", "WalksyOptimizer", "LWFH Crystal",
+        "catlean", "AsteriaClient", "198Macros"
+    )
+    # Module indicators (weak/medium/strong based on context)
+    ModuleIndicators = @(
+        "KillAura", "AimAssist", "TriggerBot", "AutoClicker", "Reach", "Velocity",
+        "AntiKnockback", "Fly", "Speed", "Bhop", "Strafe", "Scaffold", "Tower", "Step",
+        "LongJump", "Jesus", "NoFall", "Phase", "Blink", "Timer", "Freecam", "XRay",
+        "ESP", "Tracers", "StorageESP", "FullBright", "ChestStealer", "InventoryMove",
+        "AutoArmor", "AutoTotem", "FastPlace", "FastBreak", "Nuker", "Rotation",
+        "Criticals", "Disabler", "PacketFly", "NoSlow", "SafeWalk", "Backtrack",
+        "LegitAssist", "Hitboxes", "AutoCrystal", "CrystalAura", "Surround", "SelfTrap",
+        "AnchorAura", "BedAura", "AutoMace", "ShieldBreaker"
+    )
+    # Weak modules (low confidence alone)
+    WeakModules = @("ESP", "Speed", "FullBright", "Hitboxes")
+    # Package/class patterns (regex)
+    PackagePatterns = @(
+        "\b(?:net|com|org|io|xyz)\.(?:minecraft|mc|client)\.(?:cheat|hack|mod|module)\b",
+        "\b(?:me|club|wtf|cc)\.(?:[a-z]+)\.(?:client|hack)\b"
+    )
+    # Domain patterns (regex, offline match only) – includes new domains
+    DomainPatterns = @(
+        "\b(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|io|xyz|club|gg|rip|top|tk|ml|ga|cf|us|biz|info|name|tv|me|eu)\b",
+        # Cheat-related domains from user
+        "vape\.gg|vapeclient\.com|meteorclient\.com|liquidbounce\.net|wurstclient\.net",
+        "sigmaclient\.com|novoware\.cc|gamesense\.pw|osirisclient\.com|prestigeclient\.vip",
+        "dqrkis\.xyz|orchard\.gg|intent\.store|rise\.today|riseclient\.com"
+    )
+    # File-name patterns for suspicious files
+    SuspiciousFilePatterns = @(
+        ".*hack.*\.jar", ".*cheat.*\.jar", ".*client.*\.jar", ".*inject.*\.dll",
+        ".*agent.*\.jar", ".*loader.*\.jar"
+    )
+    # Known legitimate mods (to reduce false positives)
+    KnownLegitMods = @(
+        "fabric-api", "fabric-loader", "forge", "neoforge", "quilt-loader",
+        "sodium", "lithium", "phosphor", "iris", "modmenu", "cloth-config",
+        "architectury", "krypton", "ferritecore", "lazydfu", "starlight",
+        "entityculling", "dynamicfps", "spark", "servercore", "vmp"
+    )
+    # Allowlisted domains (offline comparison only)
+    AllowlistDomains = @(
+        "modrinth.com", "curseforge.com", "minecraft.net", "mojang.com",
+        "github.com", "fabricmc.net", "quiltmc.org", "neoforged.net"
+    )
+    # Allowlisted paths (system and common)
+    AllowlistPaths = @(
+        "$env:ProgramFiles\Java",
+        "$env:ProgramFiles\Common Files",
+        "$env:windir\System32",
+        "$env:windir\SysWOW64"
+    )
+    # Severity weights for scoring
+    SeverityWeights = @{
+        "Informational" = 0
+        "Low"          = 10
+        "Medium"       = 30
+        "High"         = 60
+        "Critical"     = 90
     }
-    Modules = @('KillAura','AimAssist','TriggerBot','AutoClicker','Reach','Velocity','AntiKnockback','Fly','Speed','Bhop','Strafe','Scaffold','Tower','Step','LongJump','Jesus','NoFall','Phase','Blink','Timer','Freecam','XRay','ESP','Tracers','StorageESP','FullBright','ChestStealer','InventoryMove','AutoArmor','AutoTotem','FastPlace','FastBreak','Nuker','Rotation','Criticals','Disabler','PacketFly','NoSlow','SafeWalk','Backtrack','LegitAssist','Hitboxes','AutoCrystal','CrystalAura','Surround','SelfTrap','AnchorAura','BedAura','AutoMace','ShieldBreaker')
-    WeakModules = @('ESP','Speed','FullBright','Hitboxes')
-    PackageClassPatterns = @('(?i)liquidbounce|wurstclient|meteorclient|bleachhack|rusherhack|thunderhack|baritone','(?i)(?:killaura|aimassist|triggerbot|autoclicker|packetfly|crystalaura|shieldbreaker)')
-    DomainPatterns = @('(?i)(?:discord(?:app)?\.com/api/webhooks|discord\.gg|pastebin\.com|hastebin\.com|raw\.githubusercontent\.com|tinyurl\.com|bit\.ly|t\.co|ngrok\.io|duckdns\.org|no-ip\.com)')
-    FileNamePatterns = @('(?i)(?:inject|loader|agent|cheat|client|clicker|killaura|autoclick|rusher|liquid|meteor|wurst|vape|baritone)')
-    KnownLegitimateMods = @('fabric-api','fabricloader','cloth-config','modmenu','sodium','lithium','phosphor','ferritecore','journeymap','xaeros')
-    AllowedDomains = @('minecraft.net','mojang.com','fabricmc.net','files.minecraftforge.net','modrinth.com','curseforge.com','github.com')
-    AllowedPaths = @()
-    ScanExclusions = @('node_modules','.git','Windows\WinSxS')
-    MaxFileBytes = 50MB; MaxArchiveBytes = 200MB; MaxTextBytes = 10MB; MaxFiles = 100000; TimeoutSeconds = 30
-    SeverityWeights = @{ Client=45; Module=12; Injection=55; Obfuscation=15; Domain=20; Timeline=10; Native=35; SelfDestruct=35 }
-    RegexRules = @('(?i)-javaagent(?::|=)|-agentpath(?::|=)|-Xbootclasspath','(?i)premain|agentmain|Instrumentation|URLClassLoader|defineClass|System\.load(?:Library)?','(?i)base64|xor\s*\(|aes|decrypt|string\s*decoder|reflection|ClassLoader|Mixin.*transform','(?i)(self[-_ ]?delete|cleanup|wipe|uninstall|destroy|suicide|remove).*\.(jar|dll|exe|ps1|bat|cmd|vbs)?')
-}
-$OutputNames = @('forensics-report.html','forensics-report.json','forensics-findings.csv','forensics-timeline.csv','forensics-hashes.csv','forensics-summary.txt')
-$script:ToolName = 'MagiciansReveal V3'
-$script:Unsupported = [System.Collections.Generic.List[object]]::new()
-$script:Allowlisted = [System.Collections.Generic.List[object]]::new()
-$script:Mods = [System.Collections.Generic.List[object]]::new()
-
-<# The following helpers deliberately use only local .NET/PowerShell APIs. They do
-not invoke a shell, load assemblies from evidence, open URLs, or resolve names. #>
-function Add-Unsupported([string]$Source,[string]$Reason) { $script:Unsupported.Add([pscustomobject]@{Source=$Source;Reason=$Reason}) }
-function Test-AllowedPath([string]$Path) { foreach($p in $Config.AllowedPaths){try{if((Normalize $Path).StartsWith((Normalize $p),[StringComparison]::OrdinalIgnoreCase)){return $true}}catch{}}; return $false }
-function Test-AllowedDomain([string]$Domain) { foreach($d in $Config.AllowedDomains){if($Domain -eq $d -or $Domain.EndsWith('.'+$d)){return $true}}; return $false }
-function Get-SignatureRecord([string]$Path) {
-    try { $s=Get-AuthenticodeSignature -LiteralPath $Path; return [pscustomobject]@{Status=[string]$s.Status;Signer=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{''};Issuer=if($s.SignerCertificate){$s.SignerCertificate.Issuer}else{''};CertificateNotAfter=if($s.SignerCertificate){$s.SignerCertificate.NotAfter.ToUniversalTime().ToString('o')}else{''}} } catch { return [pscustomobject]@{Status='Unavailable';Signer='';Issuer='';CertificateNotAfter=''} }
-}
-function Get-ArchiveManifest([string]$Path) {
-    try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; $z=[IO.Compression.ZipFile]::OpenRead($Path); try { foreach($e in $z.Entries){if($e.FullName -match '(?i)(fabric.mod.json|quilt.mod.json|mods.toml|neoforge.mods.toml|mcmod.info|MANIFEST.MF|\.class$)'){ $ms=$e.Open(); $sr=[IO.StreamReader]::new($ms); try{$text=$sr.ReadToEnd()}finally{$sr.Dispose();$ms.Dispose()}; Add-TextFindings $text "$Path::$($e.FullName)" 'archive manifest/class' (if($HashFiles){Get-Sha256 $Path}else{''}) '' } } } finally{$z.Dispose()} } catch { Add-Error $_.Exception.Message $Path }
-}
-function Add-ModInventory([IO.FileInfo]$File) {
-    $manifest=''; try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; $z=[IO.Compression.ZipFile]::OpenRead($File.FullName); try { $entry=$z.Entries|Where-Object {$_.FullName -match '(?i)(fabric.mod.json|quilt.mod.json|mods.toml|neoforge.mods.toml|mcmod.info)$'}|Select-Object -First 1; if($entry){$sr=[IO.StreamReader]::new($entry.Open());try{$manifest=$sr.ReadToEnd()}finally{$sr.Dispose()}} }finally{$z.Dispose()} }catch{Add-Error $_.Exception.Message $File.FullName}; $script:Mods.Add([pscustomobject][ordered]@{Path=$File.FullName;Name=$File.BaseName;ManifestPreview=if($manifest.Length -gt 1000){$manifest.Substring(0,1000)}else{$manifest};SHA256=if($HashFiles){Get-Sha256 $File.FullName}else{''};ModifiedUtc=$File.LastWriteTimeUtc.ToString('o')}); if($manifest){Add-TextFindings $manifest $File.FullName 'mod manifest' '' $File.LastWriteTimeUtc.ToString('o')}; Get-ArchiveManifest $File
-}
-function Scan-WindowsEvidence {
-    $sources=@(@{N='Recycle Bin';P=(Join-Path $env:SystemDrive '$Recycle.Bin')},@{N='Prefetch';P=(Join-Path $env:SystemRoot 'Prefetch')},@{N='Jump Lists';P=(Join-Path $env:APPDATA 'Microsoft\Windows\Recent\AutomaticDestinations')},@{N='Recent files';P=(Join-Path $env:APPDATA 'Microsoft\Windows\Recent')},@{N='RecentFileCache';P=(Join-Path $env:SystemRoot 'AppCompat\Programs')})
-    foreach($s in $sources){if(Test-Path -LiteralPath $s.P){try{Get-ChildItem -LiteralPath $s.P -File -Force -ErrorAction Stop|Where-Object{$_.Name -match '(?i)java|minecraft|\.jar|launcher|cheat|client'}|ForEach-Object{ $script:Timeline += [pscustomobject][ordered]@{TimestampUtc=$_.LastWriteTimeUtc.ToString('o');Event='Windows evidence reference';Path=$_.FullName;Source=$s.N;Details=$_.Name} }}catch{Add-Error $_.Exception.Message $s.P}}else{Add-Unsupported $s.N 'Source absent or inaccessible'} }
-    Add-Unsupported 'Amcache/Shimcache/USN/Search index' 'Not collected when protected, unavailable, or requiring specialized forensic parsers; no failure is inferred.'
-}
-function Scan-ProcessRelationships {
-    try { $ps=@(Get-CimInstance Win32_Process -ErrorAction Stop); foreach($p in $ps|Where-Object{$_.Name -match '(?i)java|minecraft|launcher'}){ $cmd=[string]$p.CommandLine; $path=[string]$p.ExecutablePath; $hash=''; Add-TextFindings "$path`n$cmd" $path 'process/JVM metadata' $hash ''; if($cmd -match '(?i)-javaagent|-agentpath|-Xbootclasspath|premain|agentmain'){ $script:Findings += New-Finding 'Injection' 'High' 82 'process command line' $path $Matches[0] 'JVM external-agent argument' $hash '' 'Legitimate profilers and security agents exist.' 'Obtain launch provenance and correlate with an on-disk agent, hash, and independent log evidence.' 'corroborated' }; if($path -match '(?i)\\(Temp|Downloads|AppData)\\|^[A-Z]:\\$'){ $script:Findings += New-Finding 'UnusualLaunchPath' 'Medium' 60 'process metadata' $path $path 'Java/Minecraft process launched from unusual location' $hash '' 'Portable launchers and custom installations are common.' 'Confirm installation provenance, parent process, signature, and timeline.' 'weak' }; try{$parent=$ps|Where-Object{$_.ProcessId -eq $p.ParentProcessId}|Select-Object -First 1;if($parent){$script:Timeline += [pscustomobject][ordered]@{TimestampUtc='';Event='Process relationship';Path=$path;Source='Win32_Process';Details="$($p.Name) parent $($parent.Name) [$($parent.ProcessId)]"}}}catch{}} } catch {Add-Unsupported 'Process inspection' $_.Exception.Message} }
-function Scan-File([IO.FileInfo]$File) {
-    $hash=if($HashFiles){Get-Sha256 $File.FullName}else{''}; $sig=if($File.Extension -match '(?i)\.dll|\.exe|\.sys'){Get-SignatureRecord $File.FullName}else{[pscustomobject]@{Status='NotApplicable';Signer='';Issuer='';CertificateNotAfter=''}}; $script:Hashes += [pscustomobject][ordered]@{Path=$File.FullName;Name=$File.Name;Length=$File.Length;CreationTimeUtc=$File.CreationTimeUtc;LastWriteTimeUtc=$File.LastWriteTimeUtc;LastAccessTimeUtc=$File.LastAccessTimeUtc;Owner=(try{(Get-Acl -LiteralPath $File.FullName).Owner}catch{''});Attributes=[string]$File.Attributes;SHA256=$hash;SignatureStatus=$sig.Status;Signer=$sig.Signer;Issuer=$sig.Issuer;CertificateNotAfter=$sig.CertificateNotAfter}; $t=$File.LastWriteTimeUtc.ToString('o'); $script:Timeline += [pscustomobject][ordered]@{TimestampUtc=$t;Event='File observed';Path=$File.FullName;Source='filesystem';Details=('Size '+$File.Length)}
-    if($File.Name -match '(?i)\.jar$' -and ($File.DirectoryName -match '(?i)mods|resourcepacks|shaderpacks' -or $DeepScan)){Add-ModInventory $File}; if($File.Name -match ($Config.FileNamePatterns -join '|')){$script:Findings += New-Finding 'FileIndicator' 'Low' 35 'filesystem' $File.FullName $File.Name 'editable filename pattern' $hash $t 'Generic names occur in legitimate tooling.' 'Verify origin, signature, manifest, and related evidence.' 'weak'}; if($File.Extension -match '(?i)\.dll|\.exe|\.sys' -and $sig.Status -notin @('Valid','NotApplicable')){$script:Findings += New-Finding 'NativeModule' 'Medium' 58 'Authenticode' $File.FullName $sig.Status 'unsigned or invalid native signature' $hash $t 'Unsigned software can be legitimate.' 'Check publisher, acquisition source, PE metadata, and process loading evidence.' 'weak'}
-    if($DeepScan -or $File.Extension -match '(?i)\.(json|toml|yaml|yml|cfg|ini|txt|xml|log|properties|args|bat|cmd|ps1|vbs|jar|class)$'){Add-TextFindings (Read-Text $File.FullName) $File.FullName 'file content' $hash $t}
-    if($File.CreationTimeUtc -gt $File.LastWriteTimeUtc.AddMinutes(2) -or $File.LastAccessTimeUtc -lt $File.CreationTimeUtc){$script:Findings += New-Finding 'TimelineAnomaly' 'Informational' 30 'filesystem metadata' $File.FullName 'timestamp ordering' 'timestamp inconsistency; not proof of tampering' $hash $t 'Copying, extraction, clocks, and filesystem behavior explain this.' 'Compare against event logs, archive timestamps, and known installation events.' 'weak'}
+    # File size limits (bytes)
+    MaxScanFileSize = 100MB
+    # Regex rules for string extraction
+    RegexRules = @(
+        @{ Name = "Webhook"; Pattern = 'https?://discord(?:app)?\.com/api/webhooks/[\w-]+/[\w-]+' },
+        @{ Name = "DiscordInvite"; Pattern = 'discord(?:\.gg|app\.com/invite)/[\w-]+' },
+        @{ Name = "Base64"; Pattern = '[A-Za-z0-9+/]{40,}={0,2}' },
+        @{ Name = "IPv4"; Pattern = '\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b' },
+        @{ Name = "URL"; Pattern = 'https?://[^\s"<>]+' }
+    )
+    # Output format settings
+    OutputFormat = @{
+        HtmlTitle = "Minecraft Forensic Report"
+        CsvDelimiter = ","
+        JsonIndent = 4
+    }
 }
 
-function Show-Usage { Get-Help -Name $MyInvocation.ScriptName -Full }
-function Add-Error([string]$Message,[string]$Path='') { $script:Errors += [pscustomobject]@{Message=$Message;Path=$Path} }
-function Normalize([string]$Path) { try { if ($Path) { return [IO.Path]::GetFullPath($Path) } } catch {} ; return $Path }
-function New-Finding([string]$Category,[string]$Severity,[int]$Confidence,[string]$Source,[string]$Path,[string]$Indicator,[string]$Rule,[string]$Hash,[string]$Timeline,[string]$Explanation,[string]$Verify,[string]$Evidence='weak') {
-    $script:FindingNumber++; [pscustomobject][ordered]@{ FindingId=('F-{0:D6}' -f $script:FindingNumber); Category=$Category; Severity=$Severity; Confidence=$Confidence; EvidenceSource=$Source; AbsolutePath=(Normalize $Path); IndicatorMatched=$Indicator; MatchingRule=$Rule; SHA256=$Hash; Timeline=$Timeline; LegitimateExplanations=$Explanation; RecommendedAnalystVerification=$Verify; EvidenceAssessment=$Evidence }
-}
-function Get-Sha256([string]$Path) { try { if ((Get-Item -LiteralPath $Path).Length -le $Config.MaxFileBytes) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } } catch { Add-Error $_.Exception.Message $Path }; return '' }
-function Get-FileRecord([IO.FileInfo]$File,[string]$Hash='') {
-    $owner=''; try {$owner=(Get-Acl -LiteralPath $File.FullName).Owner} catch {}
-    $ads=@(); try {$ads=@(Get-Item -LiteralPath $File.FullName -Stream * -ErrorAction Stop | ForEach-Object Stream)} catch {}
-    [pscustomobject][ordered]@{Path=$File.FullName;Name=$File.Name;Length=$File.Length;CreationTimeUtc=$File.CreationTimeUtc;LastWriteTimeUtc=$File.LastWriteTimeUtc;LastAccessTimeUtc=$File.LastAccessTimeUtc;Owner=$owner;Attributes=[string]$File.Attributes;AlternateDataStreams=($ads -join ';');SHA256=$Hash}
-}
-function Read-Text([string]$Path) { try { $f=Get-Item -LiteralPath $Path; if($f.Length -le $Config.MaxTextBytes){return [IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8)} } catch { Add-Error $_.Exception.Message $Path }; return '' }
-function Add-TextFindings([string]$Text,[string]$Path,[string]$Source,[string]$Hash,[string]$Timeline) {
-    if(!$Text){return}; $norm=($Text.ToLowerInvariant() -replace '[\s_\-\.]','')
-    foreach($client in $Config.CheatClients.Keys){ foreach($alias in $Config.CheatClients[$client]) { if($norm.Contains(($alias.ToLowerInvariant()-replace '[\s_\-\.]',''))){$script:Findings += New-Finding 'CheatClient' 'High' 78 $Source $Path $client 'normalized local indicator' $Hash $Timeline 'Legitimate mod forks or references can contain this name.' 'Compare manifest, version, author, signatures, and independent process/timeline evidence.' 'corroborated' } } }
-    foreach($module in $Config.Modules){ $rx='(?i)(?<![A-Za-z0-9])'+[regex]::Escape($module)+'(?![A-Za-z0-9])'; if([regex]::IsMatch($Text,$rx)){ $sev=if($Config.WeakModules -contains $module){'Low'}else{'Medium'}; $script:Findings += New-Finding 'ModuleIndicator' $sev 45 $Source $Path $module 'case-insensitive token match' $Hash $Timeline 'The term may be legitimate UI/mod terminology.' 'Inspect surrounding context and seek a second independent source.' 'weak' } }
-    foreach($rx in $Config.RegexRules){ if([regex]::IsMatch($Text,$rx)){ $script:Findings += New-Finding 'InjectionOrObfuscation' 'Medium' 55 $Source $Path $rx 'offline regex rule' $Hash $Timeline 'Developer tools and launchers can legitimately use these APIs.' 'Review exact surrounding code/arguments; do not execute the artifact.' 'weak' } }
-    foreach($rx in $Config.DomainPatterns){ foreach($m in [regex]::Matches($Text,$rx)){ $script:Findings += New-Finding 'DomainOrURL' 'Low' 50 $Source $Path $m.Value 'offline domain pattern; never resolved' $Hash $Timeline 'Telemetry, documentation, or mod services may be benign.' 'Compare only with local allowlist and case context.' 'weak' } }
-}
-function Scan-File([IO.FileInfo]$File) {
-    $hash=if($HashFiles){Get-Sha256 $File.FullName}else{''}; $script:Hashes += Get-FileRecord $File $hash
-    $t=$File.LastWriteTimeUtc.ToString('o'); $script:Timeline += [pscustomobject][ordered]@{TimestampUtc=$t;Event='File observed';Path=$File.FullName;Source='filesystem';Details=('Size '+$File.Length)}
-    if($File.Name -match ($Config.FileNamePatterns -join '|')){$script:Findings += New-Finding 'FileIndicator' 'Low' 35 'filesystem' $File.FullName $File.Name 'editable filename pattern' $hash $t 'Generic names occur in legitimate tooling.' 'Verify origin, signature, manifest, and related evidence.' 'weak'}
-    if($DeepScan -or $File.Extension -match '(?i)\.((json|toml|yaml|yml|cfg|ini|txt|xml|log|properties|args|bat|cmd|ps1|vbs|jar|class))$'){ Add-TextFindings (Read-Text $File.FullName) $File.FullName 'file content' $hash $t }
-}
-function Get-Roots { $r=@(); if($InstancePath){$r+=(Normalize $InstancePath)}; if($EvidencePath){$r+=(Normalize $EvidencePath)}; if(!$script:SelfTestMode){$r += @((Join-Path $env:APPDATA '.minecraft'),(Join-Path $env:APPDATA '.fabric'),(Join-Path $env:APPDATA 'Modrinth'),(Join-Path $env:APPDATA 'PrismLauncher'),(Join-Path $env:APPDATA 'CurseForge'),(Join-Path $env:APPDATA 'MultiMC'),(Join-Path $env:APPDATA 'ATLauncher'))}; return @($r | Where-Object {$_ -and (Test-Path -LiteralPath $_ -PathType Container)} | Select-Object -Unique) }
-function Scan-Files([string[]]$Roots) { $count=0; foreach($root in $Roots){ try { Get-ChildItem -LiteralPath $root -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $count -lt $Config.MaxFiles -and ($Config.ScanExclusions | ForEach-Object { $_ }) -notcontains $_.Directory.Name } | ForEach-Object { $count++; if(!$Quiet -and $count%250 -eq 0){Write-Progress -Activity 'Minecraft forensic scan' -Status "$count files"}; try{Scan-File $_}catch{Add-Error $_.Exception.Message $_.FullName} } } catch {Add-Error $_.Exception.Message $root} } }
-function Scan-Processes { try { Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {$_.Name -match '(?i)java|minecraft|launcher'} | ForEach-Object { $p=$_.ExecutablePath; $cmd=$_.CommandLine; Add-TextFindings "$p`n$cmd" ($p ?? '') 'process metadata' '' '' } } catch {Add-Error $_.Exception.Message 'Win32_Process'} }
-function Export-Reports([string[]]$Roots) {
-    New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null; $utc=(Get-Date).ToUniversalTime().ToString('o'); $counts=@{}; foreach($f in $Findings){$counts[$f.Severity]=1+($counts[$f.Severity]??0)}
-    $report=[ordered]@{SchemaVersion='1.0';CollectionTimeUtc=$utc;OfflineOnly=$true;Authorized=$true;Host=$env:COMPUTERNAME;User=$env:USERNAME;PowerShell=$PSVersionTable.PSVersion.ToString();Windows=(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption;Roots=$Roots;Summary=[ordered]@{FindingCount=$Findings.Count;SeverityCounts=$counts};Findings=$Findings;Timeline=$Timeline;Hashes=$Hashes;Errors=$Errors;UnsupportedEvidence=@('Recycle Bin content semantics','Amcache/Shimcache/RecentFileCache may require protected registry/artifact access','Windows Search index and USN Journal are reported only when readable')}
-    [IO.File]::WriteAllText((Join-Path $OutputPath 'forensics-report.json'),($report|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false)); $Findings|Export-Csv (Join-Path $OutputPath 'forensics-findings.csv') -NoTypeInformation -Encoding utf8; $Timeline|Export-Csv (Join-Path $OutputPath 'forensics-timeline.csv') -NoTypeInformation -Encoding utf8; $Hashes|Export-Csv (Join-Path $OutputPath 'forensics-hashes.csv') -NoTypeInformation -Encoding utf8
-    $summary="Minecraft SS Forensics`r`nCollected UTC: $utc`r`nRoots: $($Roots -join '; ')`r`nFindings: $($Findings.Count)`r`nDisclaimer: findings are indicators only and require analyst review; no automatic accusation or punishment was performed.`r`n"; [IO.File]::WriteAllText((Join-Path $OutputPath 'forensics-summary.txt'),$summary,[Text.UTF8Encoding]::new($false))
-    $html='<html><head><meta charset="utf-8"><title>Minecraft SS Forensics</title><style>body{font-family:Segoe UI;margin:2em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:4px}th{background:#eee}.Critical,.High{background:#fdd}</style></head><body><h1>Minecraft SS Forensics</h1><p><b>Disclaimer:</b> Indicators require analyst review. This report is read-only and offline.</p><h2>Executive summary</h2><p>Collected UTC: '+$utc+'; findings: '+$Findings.Count+'</p><h2>Findings</h2><table><tr><th>ID</th><th>Severity</th><th>Category</th><th>Confidence</th><th>Path</th><th>Indicator</th><th>Assessment</th></tr>' + (($Findings|ForEach-Object {'<tr class="'+$_.Severity+'"><td>'+[Web.HttpUtility]::HtmlEncode($_.FindingId)+'</td><td>'+ $_.Severity+'</td><td>'+ $_.Category+'</td><td>'+ $_.Confidence+'</td><td>'+[Web.HttpUtility]::HtmlEncode($_.AbsolutePath)+'</td><td>'+[Web.HttpUtility]::HtmlEncode($_.IndicatorMatched)+'</td><td>'+ $_.EvidenceAssessment+'</td></tr>'}) -join '')+'</table><h2>Errors and skipped evidence</h2><pre>'+[Web.HttpUtility]::HtmlEncode(($Errors|ConvertTo-Json -Depth 5))+'</pre></body></html>'; [IO.File]::WriteAllText((Join-Path $OutputPath 'forensics-report.html'),$html,[Text.UTF8Encoding]::new($false))
+# Additional suspicious patterns (extended from user input)
+$script:SuspiciousPatterns = @(
+    "AimAssist", "AnchorTweaks", "AutoAnchor", "AutoCrystal", "AutoDoubleHand", "JDWP.VirtualMachine.AllModules",
+    "AutoHitCrystal", "AutoPot", "AutoTotem", "AutoArmor", "InventoryTotem",
+    "LegitTotem", "PingSpoof", "SelfDestruct",
+    "ShieldBreaker", "TriggerBot", "AxeSpam", "WebMacro",
+    "FastPlace", "WalskyOptimizer", "WalksyOptimizer", "walsky.optimizer",
+    "WalksyCrystalOptimizerMod", "Donut", "Replace Mod",
+    "ShieldDisabler", "SilentAim", "Totem Hit", "Wtap", "FakeLag",
+    "dev.virel", "orchard",  # <-- new additions
+    "BlockESP", "dev.krypton", "dev/krypton", "skid.krypton", "skid/krypton",  "AntiMissClick",
+    "LagReach", "PopSwitch", "SprintReset", "ChestSteal", "AntiBot",
+    "ElytraSwap", "FastXP", "FastExp", "Refill",  "AirAnchor",
+    "jnativehook", "FakeInv", "HoverTotem", "AutoClicker", "AutoFirework",
+    "PackSpoof", "Antiknockback", "catlean", 
+    "AuthBypass", "Asteria", "Prestige", "AutoEat", "AutoMine",
+    "MaceSwap",  "Macro198", "StunSlam", "SafeAnchor", "DoubleAnchor", "AutoTPA", "BaseFinder", "Xenon", "gypsy",
+    "AutoPotRefill", "WalksyOptimizer", "KeyPearl", "AimAssist", "AutoNethPot", "AutoDtap",
+    "TriggerBot", "AutoWeb", "AnchorAction",
+    "org.chainlibs.module.impl.modules.Crystal.Y",
+    "org.chainlibs.module.impl.modules.Crystal.bF",
+    "org.chainlibs.module.impl.modules.Crystal.bM",
+    "org.chainlibs.module.impl.modules.Crystal.bY",
+    "org.chainlibs.module.impl.modules.Crystal.bq",
+    "org.chainlibs.module.impl.modules.Crystal.cv",
+    "org.chainlibs.module.impl.modules.Crystal.o",
+    "org.chainlibs.module.impl.modules.Blatant.I",
+    "org.chainlibs.module.impl.modules.Blatant.bR",
+    "org.chainlibs.module.impl.modules.Blatant.bx",
+    "org.chainlibs.module.impl.modules.Blatant.cj",
+    "org.chainlibs.module.impl.modules.Blatant.dk",
+    "imgui.gl3", "imgui.glfw",
+    "BowAim", "Criticals", "Fakenick", "FakeItem",
+    "invsee", "ItemExploit", "Hellion", "hellion",
+    "LicenseCheckMixin", "ClientPlayerInteractionManagerAccessor",
+    "ClientPlayerEntityMixim", "dev.gambleclient", "obfuscatedAuth",
+    "phantom-refmap.json", "xyz.greaj",
+    "じ.class", "ふ.class", "ぶ.class", "ぷ.class", "た.class",
+    "ね.class", "そ.class", "な.class", "ど.class", "ぐ.class",
+    "ず.class", "で.class", "つ.class", "べ.class", "せ.class",
+    "と.class", "み.class", "び.class", "す.class", "の.class"
+)
+
+$script:CheatStrings = @(
+    "AutoCrystal", "autocrystal", "auto crystal", "cw crystal", "JDWP.VirtualMachine.AllModules",
+    "dontPlaceCrystal", "dontBreakCrystal",
+    "dev.virel", "orchard",  # <-- new additions
+    "AutoHitCrystal", "autohitcrystal", "canPlaceCrystalServer", "healPotSlot",
+    "ＡｕｔｏＣｒｙｓｔａｌ", "Ａｕｔｏ Ｃｒｙｓｔａｌ",
+    "ＡｕｔｏＨｉｔＣｒｙｓｔａｌ",
+    "AutoAnchor", "autoanchor", "auto anchor", "DoubleAnchor",
+     "HasAnchor", "anchortweaks", "anchor macro", "safe anchor", "safeanchor",
+    "SafeAnchor", "AirAnchor",
+    "ＡｕｔｏＡｎｃｈｏｒ", "Ａｕｔｏ Ａｎｃｈｏｒ",
+    "ＤｏｕｂｌｅＡｎｃｈｏｒ", "Ｄｏｕｂｌｅ Ａｎｃｈｏｒ",
+    "ＳａｆｅＡｎｃｈｏｒ", "Ｓａｆｅ Ａｎｃｈｏｒ",
+    "Ａｎｃｈｏｒ Ｍａｃｒｏ", "anchorMacro",
+    "AutoTotem", "autototem", "auto totem", "InventoryTotem",
+    "inventorytotem", "HoverTotem", "hover totem", "legittotem",
+    "ＡｕｔｏＴｏｔｅｍ", "Ａｕｔｏ Ｔｏｔｅｍ",
+    "ＨｏｖｅｒＴｏｔｅｍ", "Ｈｏｖｅｒ Ｔｏｔｅｍ",
+    "ＩｎｖｅｎｔｏｒｙＴｏｔｅｍ", "Ａｕｔｏ Ｉｎｖｅｎｔｏｒｙ Ｔｏｔｅｍ",
+    "Ａｕｔｏ Ｔｏｔｅｍ Ｈｉｔ",
+    "AutoPot", "autopot", "auto pot", "speedPotSlot", "strengthPotSlot",
+    "AutoArmor", "autoarmor", "auto armor",
+    "ＡｕｔｏＰｏｔ", "Ａｕｔｏ Ｐｏｔ",
+    "Ａｕｔｏ Ｐｏｔ Ｒｅｆｉｌｌ", "AutoPotRefill",
+    "ＡｕｔｏＡｒｍｏｒ", "Ａｕｔｏ Ａｒｍｏｒ",
+    "preventSwordBlockBreaking", "preventSwordBlockAttack",
+    "ShieldDisabler", "ShieldBreaker",
+    "ＳｈｉｅｌｄＤｉｓａｂｌｅｒ", "Ｓｈｉｅｌｄ Ｄｉｓａｂｌｅｒ",
+    "Breaking shield with axe...",
+    "AutoDoubleHand", "autodoublehand", "auto double hand",
+    "ＡｕｔｏＤｏｕｂｌｅＨａｎｄ", "Ａｕｔｏ Ｄｏｕｂｌｅ Ｈａｎｄ",
+    "AutoClicker",
+    "ＡｕｔｏＣｌｉｃｋｅｒ",
+    "Failed to switch to mace after axe!",
+    "AutoMace", "MaceSwap", "SpearSwap",
+    "ＡｕｔｏＭａｃｅ", "Ａｕｔｏ Ｍａｃｅ",
+    "ＭａｃｅＳｗａｐ", "Ｍａｃｅ Ｓｗａｐ",
+    "Ｓｐｅａｒ Ｓｗａｐ", "Ａｕｔｏｍａｔｉｃａｌｌｙ ａｘｅ ａｎｄ ｍａｃｅ ｓｈｉｅｌｄｅｄ ｐｌａｙｅｒｓ",
+    "Ｓｔｕｎ Ｓｌａｍ", "StunSlam",
+    "Donut", "JumpReset", "axespam", "axe spam",
+    
+    "findKnockbackSword", "attackRegisteredThisClick",
+    "AimAssist", "aimassist", "aim assist",
+    "triggerbot", "trigger bot",
+    "ＡｉｍＡｓｓｉｓｔ", "Ａｉｍ Ａｓｓｉｓｔ",
+    "ＴｒｉｇｇｅｒＢｏｔ", "Ｔｒｉｇｇｅｒ Ｂｏｔ",
+    "Silent Rotations", "SilentRotations",
+    "Ｓｉｌｅｎｔ Ｒｏｔａｔｉｏｎｓ",
+    "FakeInv", "swapBackToOriginalSlot",
+    "FakeLag", "pingspoof", "ping spoof",
+    "ＦａｋｅＬａｇ", "Ｆａｋｅ Ｌａｇ",
+    "fakePunch", "Fake Punch",
+    "Ｆａｋｅ Ｐｕｎｃｈ",
+    "mace_swap", "quick_strike", "macro_198", "stun_slam",
+    "safe_anchor", "double_anchor", "auto_pot_refill",
+    "walksy_optimizer", "key_pearl", "aim_assist",
+    "auto_neth_pot", "auto_dtap", "trigger_bot", "auto_web",
+    "DOUBLE_ESCAPE", "DOUBLE_RIGHTCLICK_FIRST", "DOUBLE_RIGHTCLICK_SECOND",
+    "POST_CYCLE_DELAY", "PLACE_OBI", "WAIT_OBI", "PLACE_CRYSTAL", "BREAK_CRYSTAL",
+    "ROTATING_DOWN", "ROTATING_BACK", "REFILLING", "PLANTING", "BONEMEALING",
+    "AnchorAction", "Places two anchors for massive damage",
+    "REOFFHAND_TOTEM",
+    "webmacro", "web macro",
+    "AntiWeb", "AutoWeb",
+    "Ａｎｔｉ Ｗｅｂ", "ＡｕｔｏＷｅｂ",
+    "Ｐｌａｃｅｓ Ｗｅｂｓ Ｏｎ Ｅｎｅｍｉｅｓ",
+    "lvstrng", "dqrkis", "selfdestruct", "self destruct",
+    "WalksyCrystalOptimizerMod", "WalksyOptimizer", "WalskyOptimizer",
+    "Ｗａｌｋｓｙ Ｏｐｔｉｍｉｚｅｒ",
+    "autoCrystalPlaceClock",
+    "AutoFirework", "ElytraSwap", "FastXP", "FastExp", "NoJumpDelay",
+    "ＥｌｙｔｒａＳｗａｐ", "Ｅｌｙｔｒａ Ｓｗａｐ",
+    "PackSpoof", "Antiknockback", "catlean",
+    "AuthBypass", "obfuscatedAuth", "LicenseCheckMixin",
+    "BaseFinder", "invsee", "ItemExploit",
+    "FreezePlayer",
+    "Ｆｒｅｅｃａｍ", "Ｍｏｖｅ ｆｒｅｅｌｙ ｔｈｒｏｕｇｈ ｗａｌｌｓ",
+    "Ｎｏ Ｃｌｉｐ", "Ｆｒｅｅｚｅ Ｐｌａｙｅｒ",
+    "LWFH Crystal", "JDWP.VirtualMachine.AllModules",
+    "ＬＷＦＨ Ｃｒｙｓｔａｌ",
+    "KeyPearl", "LootYeeter",
+    "ＫｅｙＰｅａｒｌ", "Ｋｅｙ Ｐｅａｒｌ",
+    "Ｌｏｏｔ Ｙｅｅｔｅｒ",
+    "FastPlace",
+    "Ｆａｓｔ Ｐｌａｃｅ", "Ｐｌａｃｅ ｂｌｏｃｋｓ ｆａｓｔｅｒ",
+    "AutoBreach",
+    "Ａｕｔｏ Ｂｒｅａｃｈ",
+    "setBlockBreakingCooldown", "getBlockBreakingCooldown", "blockBreakingCooldown",
+    "onBlockBreaking", "setItemUseCooldown",
+    "invokeDoAttack", "invokeDoItemUse", "invokeOnMouseButton",
+    "onPushOutOfBlocks", "onIsGlowing",
+    "Automatically switches to sword when hitting with totem",
+    "arrayOfString", "POT_CHEATS",
+    "Dqrkis Client", "Entity.isGlowing",
+    "Activate Key", "Ａｃｔｉｖａｔｅ Ｋｅｙ",
+    "Click Simulation", "Ｃｌｉｃｋ Ｓｉｍｕｌａｔｉｏｎ",
+    "On RMB", "Ｏｎ ＲＭＢ",
+    "No Count Glitch", "Ｎｏ Ｃｏｕｎｔ Ｇｌｉｔｃｈ",
+    "No Bounce", "NoBounce", "Ｎｏ Ｂｏｕｎｃｅ", "ＮｏＢｏｕｎｃｅ",
+    "Ｒｅｍｏｖｅｓ ｔｈｅ ｃｒｙｓｔａｌ ｂｏｕｎｃｅ ａｎｉｍａｔｉｏｎ",
+    "Place Delay", "Ｐｌａｃｅ Ｄｅｌａｙ",
+    "Break Delay", "Ｂｒｅａｋ Ｄｅｌａｙ",
+     "Ｆａｓｔ Ｍｏｄｅ",
+    "Place Chance", "Ｐｌａｃｅ Ｃｈａｎｃｅ",
+    "Break Chance", "Ｂｒｅａｋ Ｃｈａｎｃｅ",
+    "Stop On Kill", "Ｓｔｏｐ Ｏｎ Ｋｉｌｌ",
+    "Ｄａｍａｇｅ Ｔｉｃｋ", "damagetick",
+    "Anti Weakness", "Ａｎｔｉ Ｗｅａｋｎｅｓｓ",
+    "Particle Chance", "Ｐａｒｔｉｃｌｅ Ｃｈａｎｃｅ",
+    "Trigger Key", "Ｔｒｉｇｇｅｒ Ｋｅｙ",
+    "Switch Delay", "Ｓｗｉｔｃｈ Ｄｅｌａｙ",
+    "Totem Slot", "Ｔｏｔｅｍ Ｓｌｏｔ",
+    "Silent Rotations", "Ｓｉｌｅｎｔ Ｒｏｔａｔｉｏｎｓ",
+    "Smooth Rotations", "Ｓｍｏｏｔｈ Ｒｏｔａｔｉｏｎｓ",
+    "Rotation Speed", "Ｒｏｔａｔｉｏｎ Ｓｐｅｅｄ",
+    "Use Easing", "Ｕｓｅ Ｅａｓｉｎｇ",
+    "Easing Strength", "Ｅａｓｉｎｇ Ｓｔｒｅｎｇｔｈ",
+    "While Use", "Ｗｈｉｌｅ Ｕｓｅ",
+    "Stop on Kill", "Ｓｔｏｐ ｏｎ Ｋｉｌｌ",
+    "Click Simulation", "Ｃｌｉｃｋ Ｓｉｍｕｌａｔｉｏｎ",
+    "Glowstone Delay", "Ｇｌｏｗｓｔｏｎｅ Ｄｅｌａｙ",
+    "Glowstone Chance", "Ｇｌｏｗｓｔｏｎｅ Ｃｈａｎｃｅ",
+    "Explode Delay", "Ｅｘｐｌｏｄｅ Ｄｅｌａｙ",
+    "Explode Chance", "Ｅｘｐｌｏｄｅ Ｃｈａｎｃｅ",
+    "Explode Slot", "Ｅｘｐｌｏｄｅ Ｓｌｏｔ",
+    "Only Charge", "Ｏｎｌｙ Ｃｈａｒｇｅ",
+    "Anchor Macro", "Ａｎｃｈｏｒ Ｍａｃｒｏ",
+    "Reach Distance", "Ｒｅａｃｈ Ｄｉｓｔａｎｃｅ",
+    "Min Height", "Ｍｉｎ Ｈｅｉｇｈｔ",
+    "Min Fall Speed", "Ｍｉｎ Ｆａｌｌ Ｓｐｅｅｄ",
+    "Attack Delay", "Ａｔｔａｃｋ Ｄｅｌａｙ",
+    "Breach Delay", "Ｂｒｅａｃｈ Ｄｅｌａｙ",
+    "Require Elytra", "Ｒｅｑｕｉｒｅ Ｅｌｙｔｒａ",
+    "Auto Switch Back", "Ａｕｔｏ Ｓｗｉｔｃｈ Ｂａｃｋ",
+    "Check Line of Sight", "Ｃｈｅｃｋ Ｌｉｎｅ ｏｆ Ｓｉｇｈｔ",
+    "Only When Falling", "Ｏｎｌｙ Ｗｈｅｎ Ｆａｌｌｉｎｇ",
+    "Require Crit", "Ｒｅｑｕｉｒｅ Ｃｒｉｔ",
+    "Show Status Display", "Ｓｈｏｗ Ｓｔａｔｕｓ Ｄｉｓｐｌａｙ",
+    "Stop On Crystal", "Ｓｔｏｐ Ｏｎ Ｃｒｙｓｔａｌ",
+    "Check Shield", "Ｃｈｅｃｋ Ｓｈｉｅｌｄ",
+    "On Pop", "Ｏｎ Ｐｏｐ",
+    "Predict Damage", "Ｐｒｅｄｉｃｔ Ｄａｍａｇｅ",
+    "On Ground", "Ｏｎ Ｇｒｏｕｎｄ",
+    "Check Players", "Ｃｈｅｃｋ Ｐｌａｙｅｒｓ",
+    "Predict Crystals", "Ｐｒｅｄｉｃｔ Ｃｒｙｓｔａｌｓ",
+    "Check Aim", "Ｃｈｅｃｋ Ａｉｍ",
+    "Check Items", "Ｃｈｅｃｋ Ｉｔｅｍｓ",
+    "Activates Above", "Ａｃｔｉｖａｔｅｓ Ａｂｏｖｅ",
+    "Blatant", "Ｂｌａｔａｎｔ",
+    "Force Totem", "Ｆｏｒｃｅ Ｔｏｔｅｍ",
+    "Stay Open For", "Ｓｔａｙ Ｏｐｅｎ Ｆｏｒ",
+    "Auto Inventory Totem", "Ａｕｔｏ Ｉｎｖｅｎｔｏｒｙ Ｔｏｔｅｍ",
+    "Only On Pop", "Ｏｎｌｙ Ｏｎ Ｐｏｐ",
+    "Vertical Speed", "Ｖｅｒｔｉｃａｌ Ｓｐｅｅｄ",
+    "Hover Totem", "Ｈｏｖｅｒ Ｔｏｔｅｍ",
+    "Swap Speed", "Ｓｗａｐ Ｓｐｅｅｄ",
+    "Strict One-Tick", "Ｓｔｒｉｃｔ Ｏｎｅ－Ｔｉｃｋ",
+    "Mace Priority", "Ｍａｃｅ Ｐｒｉｏｒｉｔｙ",
+    "Min Totems", "Ｍｉｎ Ｔｏｔｅｍｓ",
+    "Min Pearls", "Ｍｉｎ Ｐｅａｒｌｓ",
+    "Totem First", "Ｔｏｔｅｍ Ｆｉｒｓｔ",
+    "Drop Interval", "Ｄｒｏｐ Ｉｎｔｅｒｖａｌ",
+    "Random Pattern", "Ｒａｎｄｏｍ Ｐａｔｔｅｒｎ",
+    "Loot Yeeter", "Ｌｏｏｔ Ｙｅｅｔｅｒ",
+    "Horizontal Aim Speed", "Ｈｏｒｉｚｏｎｔａｌ Ａｉｍ Ｓｐｅｅｄ",
+    "Vertical Aim Speed", "Ｖｅｒｔｉｃａｌ Ａｉｍ Ｓｐｅｅｄ",
+    "Include Head", "Ｉｎｃｌｕｄｅ Ｈｅａｄ",
+    "Web Delay", "Ｗｅｂ Ｄｅｌａｙ",
+    "Holding Web", "Ｈｏｌｄｉｎｇ Ｗｅｂ",
+    "Not When Affects Player", "Ｎｏｔ Ｗｈｅｎ Ａｆｆｅｃｔｓ Ｐｌａｙｅｒ",
+    "Hit Delay", "Ｈｉｔ Ｄｅｌａｙ",
+    "Ｓｗｉｔｃｈ Ｂａｃｋ",
+    "Require Hold Axe", "Ｒｅｑｕｉｒｅ Ｈｏｌｄ Ａｘｅ",
+    "Fake Punch", "Ｆａｋｅ Ｐｕｎｃｈ",
+    "placeInterval", "breakInterval", "stopOnKill",
+    "activateOnRightClick", "holdCrystal",
+    "ｐｌａｃｅＩｎｔｅｒｖａｌ", "ｂｒｅａｋＩｎｔｅｒｖａｌ",
+    "ｓｔｏｐＯｎＫｉｌｌ", "ａｃｔｉｖａｔｅＯｎＲｉｇｈｔＣｌｉｃｋ",
+    "ｄａｍａｇｅｔｉｃｋ", "ｈｏｌｄＣｒｙｓｔａｌ",
+    "ｆａｋｅＰｕｎｃｈ",
+    "Ｒｅｆｉｌｌｓ ｙｏｕｒ ｈｏｔｂａｒ ｗｉｔｈ ｐｏｔｉｏｎｓ",
+    "Ｋｅｐｓ ｙｏｕ ｓｐｒｉｎｔｉｎｇ ａｔ ａｌｌ ｔｉｍｅｓ",
+    "Ｐｌａｃｅｓ ａｎｃｈｏｒ， ｃｈａｒｇｅｓ ｉｔ， ｐｒｏｔｅｃｔｓ ｙｏｕ， ａｎｄ ｅｘｐｌｏｄｅｓ",
+    "Ａｕｔｏ ｓｗａｐ ｔｏ ｓｐｅａｒ ｏｎ ａｔｔａｃｋ",
+    "Macro Key", "Ａｕｔｏ Ｐｏｔ", "Ｍａｃｒｏ Ｋｅｙ",
+    "KillAura", "ClickAura", "MultiAura", "ForceField", "LegitAura",
+    "AimBot", "AutoAim", "SilentAim", "AimLock", "HeadSnap",
+    "CrystalAura",
+    "AnchorAura", "AnchorFill", "AnchorPlace",
+    "BedAura", "AutoBed", "BedBomb", "BedPlace",
+    "BowAimbot", "BowSpam", "AutoBow",
+    "AutoCrit", "CritBypass", "AlwaysCrit", "CriticalHit",
+    "ReachHack", "ExtendReach", "LongReach", "HitboxExpand",
+    "AntiKB", "NoKnockback", "GrimVelocity", "GrimDisabler", "VelocitySpoof", "KBReduce",
+    "OffhandTotem", "TotemSwitch",
+    "AutoWeapon", "AutoSword", "AutoCity", "Burrow", "SelfTrap",
+    "HoleFiller", "AntiSurround", "AntiBurrow",
+    "WTap", "TargetStrafe", "AutoGap", "AutoPearl",
+    "FlyHack", "CreativeFlight", "BoatFly", "PacketFly", "AirJump",
+    "SpeedHack", "BHop", "BunnyHop",
+    "AntiFall", "NoFallDamage", "SafeFall",
+    "StepHack", "FastClimb", "AutoStep", "HighStep",
+    "WaterWalk", "LiquidWalk", "LavaWalk",
+    "NoSlow", "NoSlowdown", "NoWeb", "NoSoulSand",
+    "WallHack",
+    "ElytraSpeed", "InstantElytra",
+    "ScaffoldWalk", "FastBridge", "BuildHelper", "AutoBridge",
+    "Nuker", "NukerLegit", "InstantBreak",
+    "GhostHand", "NoSwing",
+    "PlaceAssist", "AirPlace", "AutoPlace", "InstantPlace",
+    "PlayerESP", "MobESP", "ItemESP", "StorageESP", "ChestESP",
+    "Tracers", "NameTagsHack",
+    "XRayHack", "OreFinder", "CaveFinder", "OreESP",
+    "NewChunks", "ChunkBorders", "TunnelFinder",
+    "TargetHUD", "ReachDisplay",
+    "DoubleClicker", "JitterClick", "ButterflyClick", "CPSBoost",
+    "ChestStealer", "InvManager", "InvMovebypass",
+    "AutoSprint", "AntiAFK", "AutoRespawn",
+    "PopSwitch",
+    "FakeLatency", "FakePing", "SpoofRotation", "PositionSpoof",
+    "GameSpeed", "SpeedTimer",
+     "GrimBypass", "VulcanBypass", "MatrixBypass",
+    "AACBypass", "VerusDisabler", "IntaveBypass", "WatchdogBypass",
+    "PacketMine", "PacketWalk", "PacketSneak", "PacketCancel", "PacketDupe", "PacketSpam",
+    "SelfDestruct", "HideClient",
+    "SessionStealer", "TokenLogger", "TokenGrabber", "DiscordToken",
+    "RemoteAccess", "ReverseShell", "C2Server", "Backdoor", "KeyLogger",
+    "StashFinder", "TrailFinder",
+    "imgui.binding",
+    "JNativeHook", "GlobalScreen", "NativeKeyListener",
+    "client-refmap.json", "cheat-refmap.json",
+    "aHR0cDovL2FwaS5ub3ZhY2xpZW50LmxvbC93ZWJob29rLnR4dA==",
+    "meteordevelopment", "cc/novoline",
+    "com/alan/clients", "club/maxstats", "wtf/moonlight",
+    "me/zeroeightsix/kami", "net/ccbluex", "today/opai",
+    "net/minecraft/injection", "org/chainlibs/module/impl/modules",
+    "xyz/greaj", "com/cheatbreaker", "com/moonsworth",
+    "doomsdayclient", "DoomsdayClient", "doomsday.jar",
+    "novaclient", "api.novaclient.lol",
+    "WalksyOptimizer", "LWFH Crystal",
+    "vape.gg", "vapeclient", "VapeClient", "VapeLite",
+    "intent.store", "IntentClient",
+    "rise.today", "riseclient.com",
+    "meteor-client", "meteorclient", "meteordevelopment.meteorclient",
+    "liquidbounce", "fdp-client", "net.ccbluex",
+    "novoware", "novoclient",
+    "aristois", "impactclient", "azura",
+    "pandaware", "skilled", "moonClient", "astolfo",
+    "futureClient", "konas", "rusherhack", "inertia", "exhibition",
+    "dev.krypton", "dev/krypton", "skid.krypton", "skid/krypton",
+     "VirginClient", "virgin client",
+    "catlean", "CatleanClient", "catlean client",
+     "ArgonClient", "argon client",
+    "Asteria", "AsteriaClient", "asteria client",
+    "Prestige", "PrestigeClient", "prestige client", "prestigeclient.vip",
+    "gypsy", "GypsyClient", "gypsy client",
+    "Xenon", "XenonClient", "xenon client",
+     "GrimClient", "grim client",
+    "phantom-refmap.json",
+     "dqrkis.xyz", "Dqrkis Client"
+)
+#endregion
+
+#region Initialization and Authorization
+function Confirm-Authorization {
+    Write-Host "`n⚠️  This tool is for authorized server-staff use only." -ForegroundColor Yellow
+    Write-Host "It performs read‑only scans and does not modify any files." -ForegroundColor Gray
+    Write-Host "Do you have explicit authorization to run this scan on this system?" -ForegroundColor Cyan
+    Write-Host "Type 'YES' to continue or any other key to exit: " -NoNewline
+    $response = Read-Host
+    if ($response -ne "YES") {
+        Write-Host "Authorization not confirmed. Exiting." -ForegroundColor Red
+        exit 0
+    }
+    Write-Host "Authorization confirmed. Starting scan..." -ForegroundColor Green
 }
 
-$script:Findings=@(); $script:Timeline=@(); $script:Hashes=@(); $script:Errors=@(); $script:FindingNumber=0; $script:SelfTestMode=[bool]$SelfTest
-if($Help){Show-Usage; exit 0}; if(!$Authorized){Write-Error 'Explicit authorization is required. Re-run with -Authorized after confirming you are authorized to inspect this system.'; exit 2}
-if($ConfigPath){try{$external=Get-Content -LiteralPath $ConfigPath -Raw|ConvertFrom-Json; foreach($p in $external.PSObject.Properties){$Config[$p.Name]=$p.Value}}catch{Add-Error $_.Exception.Message $ConfigPath}}
-if($SelfTest){$tmp=Join-Path ([IO.Path]::GetTempPath()) ('MCSS-'+[guid]::NewGuid()); New-Item -ItemType Directory -Path (Join-Path $tmp 'mods') -Force|Out-Null; [IO.File]::WriteAllText((Join-Path $tmp 'mods\fixture.txt'),'example LiquidBounce and KillAura -javaagent'); $InstancePath=$tmp; try{ $roots=Get-Roots; Scan-Files $roots; if(!$Findings){throw 'Self-test fixture was not detected'}; Export-Reports $roots; Write-Output 'Self-test passed.' } finally {Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue}; exit 0}
-$roots=Get-Roots; if(!$roots){Add-Error 'No configured Minecraft or evidence roots were accessible.'}; Scan-Files $roots; Scan-ProcessRelationships; Scan-WindowsEvidence; Export-Reports $roots; if(!$Quiet){Write-Output "Completed $script:ToolName read-only offline scan. Reports: $(Normalize $OutputPath)"}
+Confirm-Authorization
+
+# Ensure script runs with -ExecutionPolicy Bypass if needed (warning)
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning "Not running as Administrator. Some deep system scans (USN Journal, Prefetch, etc.) may be limited."
+}
+
+# Set output path
+if (-not $OutputPath) {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $OutputPath = Join-Path -Path $PWD.Path -ChildPath "Forensics_Report_$timestamp"
+}
+New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+
+# Evidence path overrides instance path
+if ($EvidencePath) {
+    if (-not (Test-Path $EvidencePath -PathType Container)) {
+        Write-Error "EvidencePath directory not found: $EvidencePath"
+        exit 1
+    }
+    $InstancePath = $EvidencePath
+}
+
+#endregion
+
+#region Helper Functions
+function Get-NormalizedPath {
+    param([string]$Path)
+    try { return [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
+}
+
+function Get-FileInfo {
+    param([string]$Path)
+    $item = Get-Item -Path $Path -ErrorAction SilentlyContinue
+    if ($item) {
+        return [PSCustomObject]@{
+            FullName = $item.FullName
+            Name = $item.Name
+            Length = $item.Length
+            CreationTime = $item.CreationTimeUtc
+            LastWriteTime = $item.LastWriteTimeUtc
+            LastAccessTime = $item.LastAccessTimeUtc
+            Attributes = $item.Attributes
+            Owner = (Get-Acl -Path $Path -ErrorAction SilentlyContinue).Owner
+        }
+    }
+    return $null
+}
+
+function Get-FileHashIfRequested {
+    param([string]$Path)
+    if ($HashFiles -and (Test-Path $Path)) {
+        try {
+            $hash = Get-FileHash -Path $Path -Algorithm SHA256 -ErrorAction Stop
+            return $hash.Hash
+        } catch { return $null }
+    }
+    return $null
+}
+
+function Test-FileSizeLimit {
+    param([string]$Path)
+    try {
+        $size = (Get-Item -Path $Path -ErrorAction Stop).Length
+        if ($size -gt $Config.MaxScanFileSize) { return $false }
+        return $true
+    } catch { return $false }
+}
+
+function Get-StringPatternMatches {
+    param([string]$Content)
+    $matches = @()
+    foreach ($rule in $Config.RegexRules) {
+        $regex = [regex]$rule.Pattern
+        $m = $regex.Matches($Content)
+        foreach ($match in $m) {
+            $matches += [PSCustomObject]@{
+                Rule = $rule.Name
+                Value = $match.Value
+            }
+        }
+    }
+    return $matches
+}
+#endregion
+
+#region Scanning Functions
+
+function Find-MinecraftInstances {
+    param([string]$BasePath)
+    $instances = @()
+    # Common launcher paths
+    $paths = @(
+        "$env:APPDATA\.minecraft",
+        "$env:APPDATA\ModrinthApp\profiles",
+        "$env:APPDATA\PrismLauncher\instances",
+        "$env:APPDATA\.multimc\instances",
+        "$env:APPDATA\ATLauncher\instances",
+        "$env:USERPROFILE\curseforge\minecraft\Instances"
+    )
+    if ($BasePath) {
+        $base = Get-NormalizedPath -Path $BasePath
+        if (Test-Path $base) {
+            $instances += $base
+        } else {
+            Write-Warning "Base path not found: $base"
+        }
+    }
+    # Search for .minecraft folders
+    $commonUser = "$env:USERPROFILE"
+    $searchDirs = @(
+        "$commonUser\AppData\Roaming",
+        "$commonUser\AppData\Local",
+        "$commonUser"
+    )
+    foreach ($dir in $searchDirs) {
+        if (Test-Path $dir) {
+            $found = Get-ChildItem -Path $dir -Directory -Filter ".minecraft" -Recurse -ErrorAction SilentlyContinue
+            foreach ($f in $found) {
+                $instances += $f.FullName
+            }
+        }
+    }
+    # Unique and existing
+    $instances = $instances | Where-Object { Test-Path $_ } | Sort-Object -Unique
+    return $instances
+}
+
+function Scan-MinecraftInstance {
+    param([string]$InstancePath)
+    Write-Host "Scanning instance: $InstancePath" -ForegroundColor Cyan
+    $findings = @()
+    $modsDir = Join-Path -Path $InstancePath -ChildPath "mods"
+    $configDir = Join-Path -Path $InstancePath -ChildPath "config"
+    $logsDir = Join-Path -Path $InstancePath -ChildPath "logs"
+    $resourcepacksDir = Join-Path -Path $InstancePath -ChildPath "resourcepacks"
+    $shaderpacksDir = Join-Path -Path $InstancePath -ChildPath "shaderpacks"
+
+    # Scan mods
+    if (Test-Path $modsDir) {
+        $jarFiles = Get-ChildItem -Path $modsDir -Filter "*.jar" -File -ErrorAction SilentlyContinue
+        foreach ($jar in $jarFiles) {
+            $hash = if ($HashFiles) { Get-FileHashIfRequested -Path $jar.FullName } else { $null }
+            $findings += [PSCustomObject]@{
+                Category = "Mods"
+                File = $jar.Name
+                Path = $jar.FullName
+                Hash = $hash
+                Size = $jar.Length
+                LastWrite = $jar.LastWriteTimeUtc
+            }
+            # Inspect JAR contents if DeepScan
+            if ($DeepScan) {
+                try {
+                    $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+                    foreach ($entry in $zip.Entries) {
+                        $entryName = $entry.FullName
+                        # Look for class files and check for suspicious strings
+                        if ($entryName -match "\.class$") {
+                            # Read bytes and extract strings? For speed, skip full extraction.
+                            # But we can check entry name for patterns
+                            if ($entryName -match $Config.PackagePatterns -or $entryName -match $Config.ModuleIndicators) {
+                                $findings += [PSCustomObject]@{
+                                    Category = "SuspiciousClass"
+                                    File = $jar.Name
+                                    Entry = $entryName
+                                    Matched = $matches[0]
+                                }
+                            }
+                        }
+                    }
+                    $zip.Dispose()
+                } catch {
+                    Write-Warning "Could not read JAR: $($jar.Name)"
+                }
+            }
+        }
+    }
+
+    # Scan config files
+    if (Test-Path $configDir) {
+        $configFiles = Get-ChildItem -Path $configDir -Recurse -File -ErrorAction SilentlyContinue
+        foreach ($cfg in $configFiles) {
+            if (-not (Test-FileSizeLimit -Path $cfg.FullName)) { continue }
+            try {
+                $content = Get-Content -Path $cfg.FullName -Raw -ErrorAction Stop
+                $matches = Get-StringPatternMatches -Content $content
+                if ($matches) {
+                    $findings += [PSCustomObject]@{
+                        Category = "Config"
+                        File = $cfg.Name
+                        Path = $cfg.FullName
+                        Matches = $matches
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # Scan logs
+    if (Test-Path $logsDir) {
+        $logFiles = Get-ChildItem -Path $logsDir -Filter "*.log" -File -ErrorAction SilentlyContinue
+        foreach ($log in $logFiles) {
+            if (-not (Test-FileSizeLimit -Path $log.FullName)) { continue }
+            try {
+                $content = Get-Content -Path $log.FullName -Raw -ErrorAction Stop
+                $matches = Get-StringPatternMatches -Content $content
+                if ($matches) {
+                    $findings += [PSCustomObject]@{
+                        Category = "Logs"
+                        File = $log.Name
+                        Path = $log.FullName
+                        Matches = $matches
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # Scan resourcepacks and shaderpacks (zip archives)
+    $archiveDirs = @($resourcepacksDir, $shaderpacksDir)
+    foreach ($dir in $archiveDirs) {
+        if (Test-Path $dir) {
+            $archives = Get-ChildItem -Path $dir -Filter "*.zip" -File -ErrorAction SilentlyContinue
+            foreach ($archive in $archives) {
+                # shallow scan
+                if ($DeepScan) {
+                    try {
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
+                        foreach ($entry in $zip.Entries) {
+                            if ($entry.Name -match "\.mcmeta$|\.json$") {
+                                # read content
+                                $stream = $entry.Open()
+                                $reader = New-Object System.IO.StreamReader($stream)
+                                $content = $reader.ReadToEnd()
+                                $reader.Close()
+                                $matches = Get-StringPatternMatches -Content $content
+                                if ($matches) {
+                                    $findings += [PSCustomObject]@{
+                                        Category = "Archive"
+                                        File = $archive.Name
+                                        Entry = $entry.FullName
+                                        Matches = $matches
+                                    }
+                                }
+                            }
+                        }
+                        $zip.Dispose()
+                    } catch { }
+                }
+            }
+        }
+    }
+
+    # Look for launcher profiles (JSON)
+    $profilePath = Join-Path -Path $InstancePath -ChildPath "launcher_profiles.json"
+    if (Test-Path $profilePath) {
+        try {
+            $json = Get-Content -Path $profilePath -Raw | ConvertFrom-Json
+            if ($json.profiles) {
+                foreach ($prof in $json.profiles.PSObject.Properties) {
+                    $name = $prof.Name
+                    $jvmArgs = $prof.Value.javaArgs
+                    if ($jvmArgs -match "-javaagent|-agentpath|-Xbootclasspath") {
+                        $findings += [PSCustomObject]@{
+                            Category = "LauncherProfile"
+                            Profile = $name
+                            JvmArgs = $jvmArgs
+                            Matched = "Suspicious JVM argument"
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    return $findings
+}
+
+function Scan-SystemArtifacts {
+    $findings = @()
+    # Prefetch
+    if ($DeepScan -and (Test-Path "$env:windir\Prefetch")) {
+        $prefetchFiles = Get-ChildItem -Path "$env:windir\Prefetch" -Filter "*.pf" -File -ErrorAction SilentlyContinue
+        foreach ($pf in $prefetchFiles) {
+            if ($pf.Name -match "javaw|minecraft|forge|fabric|cheat|hack|client") {
+                $findings += [PSCustomObject]@{
+                    Category = "Prefetch"
+                    File = $pf.Name
+                    Path = $pf.FullName
+                    LastWrite = $pf.LastWriteTimeUtc
+                }
+            }
+        }
+    }
+    # Recycle Bin (read-only)
+    $recyclePath = "C:`$Recycle.Bin"
+    if (Test-Path $recyclePath) {
+        $items = Get-ChildItem -Path $recyclePath -Recurse -File -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            if ($item.Name -match "\.jar$|\.exe$|\.dll$") {
+                $findings += [PSCustomObject]@{
+                    Category = "RecycleBin"
+                    File = $item.Name
+                    Path = $item.FullName
+                    LastWrite = $item.LastWriteTimeUtc
+                }
+            }
+        }
+    }
+    # USN Journal (requires admin)
+    if ($DeepScan) {
+        try {
+            # Use fsutil to query USN Journal (read-only)
+            $usnData = fsutil usn queryjournal C: 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $findings += [PSCustomObject]@{
+                    Category = "USNJournal"
+                    Info = "USN Journal available on C:"
+                    Data = $usnData
+                }
+            }
+        } catch { }
+    }
+    return $findings
+}
+
+#endregion
+
+#region Scoring and Correlation
+
+function Rate-Finding {
+    param($Finding)
+    $score = 0
+    $severity = "Informational"
+    $confidence = 50
+    $categories = @($Finding.Category)
+    # Look for cheat client or module names
+    $text = $Finding | Out-String
+    foreach ($client in $Config.CheatClientAliases) {
+        if ($text -match $client) {
+            $score += 20
+            $confidence = 70
+        }
+    }
+    foreach ($module in $Config.ModuleIndicators) {
+        if ($text -match $module) {
+            if ($module -in $Config.WeakModules) {
+                $score += 5
+            } else {
+                $score += 15
+            }
+            $confidence = 60
+        }
+    }
+    # Check for injection indicators
+    if ($text -match "-javaagent|-agentpath|-Xbootclasspath|Instrumentation|URLClassLoader|defineClass|System.load") {
+        $score += 30
+        $confidence = 80
+    }
+    # Check for obfuscation
+    if ($text -match "Base64|AES|XOR|decrypt|decode|obfuscate") {
+        $score += 10
+        $confidence = 50
+    }
+    # Corroboration: if multiple categories, increase
+    if ($categories.Count -gt 1) { $score += 10 }
+    # Determine severity
+    if ($score -ge 80) { $severity = "Critical" }
+    elseif ($score -ge 60) { $severity = "High" }
+    elseif ($score -ge 35) { $severity = "Medium" }
+    elseif ($score -ge 15) { $severity = "Low" }
+    else { $severity = "Informational" }
+
+    return @{
+        Severity = $severity
+        Confidence = [math]::Min(100, $confidence + $score / 10)
+        Score = $score
+        Description = "Score: $score"
+    }
+}
+
+#endregion
+
+#region Report Generation
+
+function Write-HtmlReport {
+    param($Findings, $Instances, $HashManifest, $SystemInfo)
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>MagiciansReveal V3 – Forensic Report</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; }
+h1 { color: #2c3e50; }
+h2 { color: #34495e; border-bottom: 1px solid #ecf0f1; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background-color: #f2f2f2; }
+.section { margin: 20px 0; }
+.disclaimer { background-color: #f9f9f9; padding: 15px; border-left: 4px solid #e74c3c; }
+</style>
+</head>
+<body>
+<h1>MagiciansReveal V3 – Minecraft Forensic Report</h1>
+<p><strong>Tool:</strong> MagiciansReveal V3 (Tim$erz)</p>
+<p><strong>Generated:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")</p>
+<p><strong>Host:</strong> $env:COMPUTERNAME</p>
+<p><strong>User:</strong> $env:USERNAME</p>
+<p><strong>PowerShell Version:</strong> $($PSVersionTable.PSVersion)</p>
+<hr>
+<div class="section">
+<h2>Executive Summary</h2>
+<p>This report contains findings from a forensic scan of Minecraft instances. All findings require analyst review.</p>
+<p><strong>Instances Scanned:</strong> $($Instances.Count)</p>
+<p><strong>Total Findings:</strong> $($Findings.Count)</p>
+</div>
+<div class="section">
+<h2>Collection Scope</h2>
+<ul>
+<li>Instance Path: $($Instances -join ', ')</li>
+<li>Deep Scan: $DeepScan</li>
+<li>Hashing: $HashFiles</li>
+<li>Offline Mode: $Offline</li>
+</ul>
+</div>
+<div class="section">
+<h2>Findings</h2>
+<table>
+<tr><th>ID</th><th>Category</th><th>Severity</th><th>Confidence</th><th>File/Path</th><th>Indicator</th></tr>
+$(
+    $i=1
+    foreach ($f in $Findings) {
+        $id = "FIND-$i"
+        $sev = $f.Severity
+        $conf = $f.Confidence
+        $cat = $f.Category
+        $path = $f.Path
+        $indicator = $f.Matched
+        "<tr><td>$id</td><td>$cat</td><td style='color:$($sev -eq 'Critical'?'red':($sev -eq 'High'?'orange':'green'))'>$sev</td><td>$conf</td><td>$path</td><td>$indicator</td></tr>"
+        $i++
+    }
+)
+</table>
+</div>
+<div class="section">
+<h2>Mod Inventory</h2>
+<ul>
+$(
+    $mods = $Findings | Where-Object { $_.Category -eq "Mods" } | Select-Object -ExpandProperty File -Unique
+    foreach ($m in $mods) { "<li>$m</li>" }
+)
+</ul>
+</div>
+<div class="section">
+<h2>Timeline</h2>
+<table>
+<tr><th>Timestamp (UTC)</th><th>Event</th><th>File</th></tr>
+$(
+    $timeline = $Findings | Sort-Object LastWrite -Descending | Select-Object -First 100
+    foreach ($t in $timeline) {
+        if ($t.LastWrite) {
+            "<tr><td>$($t.LastWrite.ToString('yyyy-MM-dd HH:mm:ss'))</td><td>$($t.Category)</td><td>$($t.File)</td></tr>"
+        }
+    }
+)
+</table>
+</div>
+<div class="section">
+<h2>False Positives / Allowlisted Items</h2>
+<p>The following known legitimate mods were excluded from high-severity scoring:</p>
+<ul>$($Config.KnownLegitMods | ForEach-Object { "<li>$_</li>" })</ul>
+</div>
+<div class="disclaimer">
+<strong>Disclaimer:</strong> This report is for investigative purposes only. Findings are indicators, not proof of wrongdoing. All findings require manual verification by an authorized analyst.
+</div>
+</body>
+</html>
+"@
+    $htmlPath = Join-Path -Path $OutputPath -ChildPath "forensics-report.html"
+    $html | Out-File -FilePath $htmlPath -Encoding UTF8
+}
+
+function Write-JsonReport {
+    param($Findings)
+    $jsonPath = Join-Path -Path $OutputPath -ChildPath "forensics-report.json"
+    $Findings | ConvertTo-Json -Depth 5 | Out-File -FilePath $jsonPath -Encoding UTF8
+}
+
+function Write-CsvReport {
+    param($Findings)
+    $csvPath = Join-Path -Path $OutputPath -ChildPath "forensics-findings.csv"
+    $Findings | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+}
+
+function Write-TimelineCsv {
+    param($Findings)
+    $timelinePath = Join-Path -Path $OutputPath -ChildPath "forensics-timeline.csv"
+    $Findings | Where-Object { $_.LastWrite } | Sort-Object LastWrite -Descending |
+        Select-Object LastWrite, Category, File, Path, Severity |
+        Export-Csv -Path $timelinePath -NoTypeInformation -Encoding UTF8
+}
+
+function Write-HashesCsv {
+    param($Findings)
+    $hashesPath = Join-Path -Path $OutputPath -ChildPath "forensics-hashes.csv"
+    $Findings | Where-Object { $_.Hash } | Select-Object Path, Hash, File |
+        Export-Csv -Path $hashesPath -NoTypeInformation -Encoding UTF8
+}
+
+function Write-SummaryText {
+    param($Findings, $Instances)
+    $summaryPath = Join-Path -Path $OutputPath -ChildPath "forensics-summary.txt"
+    $lines = @()
+    $lines += "MagiciansReveal V3 – Minecraft Forensic Summary"
+    $lines += "==============================================="
+    $lines += "Tool: MagiciansReveal V3 (Tim`$erz)"
+    $lines += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
+    $lines += "Host: $env:COMPUTERNAME"
+    $lines += "User: $env:USERNAME"
+    $lines += "Instances: $($Instances -join ', ')"
+    $lines += "Total Findings: $($Findings.Count)"
+    $severities = $Findings | Group-Object Severity | ForEach-Object { "$($_.Name): $($_.Count)" }
+    $lines += "Severity breakdown: $($severities -join ', ')"
+    $lines += ""
+    $lines += "High/Critical Findings:"
+    $highCrit = $Findings | Where-Object { $_.Severity -in @('High','Critical') }
+    foreach ($f in $highCrit) {
+        $lines += "  [$($f.Severity)] $($f.Category) - $($f.File) : $($f.Matched)"
+    }
+    $lines | Out-File -FilePath $summaryPath -Encoding UTF8
+}
+
+#endregion
+
+#region Main Execution
+
+Write-Host "Starting forensic scan..." -ForegroundColor Green
+
+# Find instances
+$instances = Find-MinecraftInstances -BasePath $InstancePath
+if ($instances.Count -eq 0) {
+    Write-Warning "No Minecraft instances found."
+    $instances = @()
+}
+
+$allFindings = @()
+$hashManifest = @()
+
+foreach ($inst in $instances) {
+    $instanceFindings = Scan-MinecraftInstance -InstancePath $inst
+    $allFindings += $instanceFindings
+}
+
+# System artifacts
+if ($DeepScan) {
+    Write-Host "Performing deep system scan..." -ForegroundColor Cyan
+    $sysFindings = Scan-SystemArtifacts
+    $allFindings += $sysFindings
+}
+
+# Scoring
+$scoredFindings = @()
+foreach ($f in $allFindings) {
+    $rating = Rate-Finding -Finding $f
+    $scoredFindings += [PSCustomObject]@{
+        ID = "FIND-$([guid]::NewGuid().ToString().Substring(0,8))"
+        Category = $f.Category
+        File = $f.File
+        Path = $f.Path
+        Matched = if ($f.Matches) { ($f.Matches | Out-String) } else { $f.Matched }
+        Severity = $rating.Severity
+        Confidence = $rating.Confidence
+        Score = $rating.Score
+        LastWrite = $f.LastWrite
+        Hash = $f.Hash
+    }
+}
+
+# Generate reports
+Write-Host "Generating reports..." -ForegroundColor Green
+Write-HtmlReport -Findings $scoredFindings -Instances $instances -HashManifest $hashManifest -SystemInfo $null
+Write-JsonReport -Findings $scoredFindings
+Write-CsvReport -Findings $scoredFindings
+Write-TimelineCsv -Findings $scoredFindings
+Write-HashesCsv -Findings $scoredFindings
+Write-SummaryText -Findings $scoredFindings -Instances $instances
+
+Write-Host "Scan complete. Reports saved to: $OutputPath" -ForegroundColor Green
+Write-Host "Press any key to exit..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+#endregion
