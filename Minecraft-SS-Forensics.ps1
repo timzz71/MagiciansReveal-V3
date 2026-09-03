@@ -1,3 +1,4 @@
+# MagiciansReveal V3.1 — complete interactive Windows PowerShell 5.1-compatible build
 [CmdletBinding(SupportsShouldProcess = $false)]
 param(
     [string]$InstancePath,
