@@ -2,6 +2,7 @@
 param(
     [string]$InstancePath,
     [string]$OutputPath = (Join-Path (Get-Location) 'Minecraft-SS-Forensics-Output'),
+    [string]$OutputPath = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Minecraft-SS-Forensics-Output'),
     [string]$EvidencePath,
     [switch]$Offline = $true,
     [switch]$DeepScan,
@@ -119,12 +120,20 @@ function Write-Banner {
 }
 function Write-FindingsToConsole {
     Write-Host ''; Write-Host 'DETAILED FINDINGS' -ForegroundColor Cyan
+    Write-Host ''; Write-Host 'COMPACT FINDINGS SUMMARY' -ForegroundColor Cyan
     Write-Host '--------------------------------------------------------------------' -ForegroundColor DarkGray
     if($Findings.Count -eq 0){Write-Host '  No indicators were detected by the configured rules.' -ForegroundColor Green;return}
     foreach($f in $Findings){$c=switch($f.Severity){'Critical'{'Red'}'High'{'Magenta'}'Medium'{'Yellow'}'Low'{'DarkYellow'}default{'Gray'}}; Write-Host ('  [{0}] {1}' -f $f.Severity,$f.IndicatorMatched) -ForegroundColor $c; Write-Host ('    Category: {0} | Confidence: {1}% | Assessment: {2}' -f $f.Category,$f.Confidence,$f.EvidenceAssessment) -ForegroundColor White; if($f.AbsolutePath){Write-Host ('    Path: {0}' -f $f.AbsolutePath) -ForegroundColor DarkGray}; Write-Host ('    Verification: {0}' -f $f.RecommendedAnalystVerification) -ForegroundColor DarkGray; Write-Host ''}
+    $groups=@($Findings | Group-Object Severity | Sort-Object @{Expression={switch($_.Name){'Critical'{0}'High'{1}'Medium'{2}'Low'{3}default{4}}}})
+    foreach($g in $groups){$c=switch($g.Name){'Critical'{'Red'}'High'{'Magenta'}'Medium'{'Yellow'}'Low'{'DarkYellow'}default{'Gray'}}; Write-Host ('  {0}: {1}' -f $g.Name,$g.Count) -ForegroundColor $c}
+    Write-Host ''
+    foreach($f in ($Findings | Sort-Object @{Expression={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}'Low'{3}default{4}}}},Category,IndicatorMatched,AbsolutePath)){
+        $c=switch($f.Severity){'Critical'{'Red'}'High'{'Magenta'}'Medium'{'Yellow'}'Low'{'DarkYellow'}default{'Gray'}}; $path=if($f.AbsolutePath){Split-Path -Leaf $f.AbsolutePath}else{''}; Write-Host ('[{0}] {1} | {2} | {3}% | {4} | {5}' -f $f.Severity,$f.Category,$f.IndicatorMatched,$f.Confidence,$f.EvidenceAssessment,$path) -ForegroundColor $c
+    }
+    Write-Host ''; Write-Host 'Full paths, explanations, verification guidance, and hashes are in the exported reports.' -ForegroundColor DarkGray
 }
 function Confirm-Authorization {
-    if($Authorized){return $true}; $answer=Read-Host 'This is an authorized server-staff investigation. Type yes to continue'; return ($answer -ceq 'yes')
+    if($Authorized){return $true}; $answer=Read-Host 'This is an authorized server-staff investigation. Type AUTHORIZED to continue'; return ($answer -ceq 'AUTHORIZED')
 }
 function Show-RunningMinecraft {
     try{$p=@(Get-CimInstance Win32_Process -ErrorAction Stop|Where-Object{$_.Name -match '(?i)^(java|javaw|minecraft|launcher).*\.exe$'});if($p.Count){foreach($x in $p){$started='unknown';try{$started=$x.CreationDate}catch{};Write-Host ('Minecraft process found: PID {0} ({1})' -f $x.ProcessId,$started) -ForegroundColor Green}}else{Write-Host 'No running Minecraft process was detected.' -ForegroundColor DarkGray}}catch{Add-Unsupported 'Running-process inspection' $_.Exception.Message}
