@@ -929,7 +929,9 @@ $(
         $cat = $f.Category
         $path = $f.Path
         $indicator = $f.Matched
-        "<tr><td>$id</td><td>$cat</td><td style='color:$($sev -eq 'Critical'?'red':($sev -eq 'High'?'orange':'green'))'>$sev</td><td>$conf</td><td>$path</td><td>$indicator</td></tr>"
+        # Determine color based on severity
+        $color = if ($sev -eq 'Critical') { 'red' } elseif ($sev -eq 'High') { 'orange' } else { 'green' }
+        "<tr><td>$id</td><td>$cat</td><td style='color:$color'>$sev</td><td>$conf</td><td>$path</td><td>$indicator</td></tr>"
         $i++
     }
 )
