@@ -83,7 +83,6 @@ $script:Config = @{
         "ThunderHack", "Raven", "Raven B+", "Rise", "Exhibition", "Sigma", "Wolfram",
         "FDP Client", "Tenacity", "Dortware", "Astolfo", "Moon", "Novo", "Zeroday",
         "Whiteout", "Baritone",
-        # New aliases from user
         "Doomsday", "DoomsdayClient", "doomsday", "VapeClient", "VapeLite", "vape.gg",
         "MeteorClient", "meteorclient", "meteordevelopment", "WurstClient",
         "SigmaClient", "Novoware", "GameSense", "OsirisClient", "CosmosClient",
@@ -110,10 +109,9 @@ $script:Config = @{
         "\b(?:net|com|org|io|xyz)\.(?:minecraft|mc|client)\.(?:cheat|hack|mod|module)\b",
         "\b(?:me|club|wtf|cc)\.(?:[a-z]+)\.(?:client|hack)\b"
     )
-    # Domain patterns (regex, offline match only) – includes new domains
+    # Domain patterns (regex, offline match only)
     DomainPatterns = @(
         "\b(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|io|xyz|club|gg|rip|top|tk|ml|ga|cf|us|biz|info|name|tv|me|eu)\b",
-        # Cheat-related domains from user
         "vape\.gg|vapeclient\.com|meteorclient\.com|liquidbounce\.net|wurstclient\.net",
         "sigmaclient\.com|novoware\.cc|gamesense\.pw|osirisclient\.com|prestigeclient\.vip",
         "dqrkis\.xyz|orchard\.gg|intent\.store|rise\.today|riseclient\.com"
@@ -168,7 +166,6 @@ $script:Config = @{
     }
 }
 
-# Additional suspicious patterns (extended from user input)
 $script:SuspiciousPatterns = @(
     "AimAssist", "AnchorTweaks", "AutoAnchor", "AutoCrystal", "AutoDoubleHand", "JDWP.VirtualMachine.AllModules",
     "AutoHitCrystal", "AutoPot", "AutoTotem", "AutoArmor", "InventoryTotem",
@@ -177,12 +174,12 @@ $script:SuspiciousPatterns = @(
     "FastPlace", "WalskyOptimizer", "WalksyOptimizer", "walsky.optimizer",
     "WalksyCrystalOptimizerMod", "Donut", "Replace Mod",
     "ShieldDisabler", "SilentAim", "Totem Hit", "Wtap", "FakeLag",
-    "dev.virel", "orchard",  # <-- new additions
+    "dev.virel", "orchard",
     "BlockESP", "dev.krypton", "dev/krypton", "skid.krypton", "skid/krypton",  "AntiMissClick",
     "LagReach", "PopSwitch", "SprintReset", "ChestSteal", "AntiBot",
     "ElytraSwap", "FastXP", "FastExp", "Refill",  "AirAnchor",
     "jnativehook", "FakeInv", "HoverTotem", "AutoClicker", "AutoFirework",
-    "PackSpoof", "Antiknockback", "catlean", 
+    "PackSpoof", "Antiknockback", "catlean",
     "AuthBypass", "Asteria", "Prestige", "AutoEat", "AutoMine",
     "MaceSwap",  "Macro198", "StunSlam", "SafeAnchor", "DoubleAnchor", "AutoTPA", "BaseFinder", "Xenon", "gypsy",
     "AutoPotRefill", "WalksyOptimizer", "KeyPearl", "AimAssist", "AutoNethPot", "AutoDtap",
@@ -214,7 +211,7 @@ $script:SuspiciousPatterns = @(
 $script:CheatStrings = @(
     "AutoCrystal", "autocrystal", "auto crystal", "cw crystal", "JDWP.VirtualMachine.AllModules",
     "dontPlaceCrystal", "dontBreakCrystal",
-    "dev.virel", "orchard",  # <-- new additions
+    "dev.virel", "orchard",
     "AutoHitCrystal", "autohitcrystal", "canPlaceCrystalServer", "healPotSlot",
     "ＡｕｔｏＣｒｙｓｔａｌ", "Ａｕｔｏ Ｃｒｙｓｔａｌ",
     "ＡｕｔｏＨｉｔＣｒｙｓｔａｌ",
@@ -490,19 +487,16 @@ function Confirm-Authorization {
 
 Confirm-Authorization
 
-# Ensure script runs with -ExecutionPolicy Bypass if needed (warning)
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Warning "Not running as Administrator. Some deep system scans (USN Journal, Prefetch, etc.) may be limited."
 }
 
-# Set output path
 if (-not $OutputPath) {
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $OutputPath = Join-Path -Path $PWD.Path -ChildPath "Forensics_Report_$timestamp"
 }
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
-# Evidence path overrides instance path
 if ($EvidencePath) {
     if (-not (Test-Path $EvidencePath -PathType Container)) {
         Write-Error "EvidencePath directory not found: $EvidencePath"
@@ -579,7 +573,6 @@ function Get-StringPatternMatches {
 function Find-MinecraftInstances {
     param([string]$BasePath)
     $instances = @()
-    # Common launcher paths
     $paths = @(
         "$env:APPDATA\.minecraft",
         "$env:APPDATA\ModrinthApp\profiles",
@@ -596,7 +589,6 @@ function Find-MinecraftInstances {
             Write-Warning "Base path not found: $base"
         }
     }
-    # Search for .minecraft folders
     $commonUser = "$env:USERPROFILE"
     $searchDirs = @(
         "$commonUser\AppData\Roaming",
@@ -611,7 +603,6 @@ function Find-MinecraftInstances {
             }
         }
     }
-    # Unique and existing
     $instances = $instances | Where-Object { Test-Path $_ } | Sort-Object -Unique
     return $instances
 }
@@ -626,7 +617,6 @@ function Scan-MinecraftInstance {
     $resourcepacksDir = Join-Path -Path $InstancePath -ChildPath "resourcepacks"
     $shaderpacksDir = Join-Path -Path $InstancePath -ChildPath "shaderpacks"
 
-    # Scan mods
     if (Test-Path $modsDir) {
         $jarFiles = Get-ChildItem -Path $modsDir -Filter "*.jar" -File -ErrorAction SilentlyContinue
         foreach ($jar in $jarFiles) {
@@ -639,16 +629,12 @@ function Scan-MinecraftInstance {
                 Size = $jar.Length
                 LastWrite = $jar.LastWriteTimeUtc
             }
-            # Inspect JAR contents if DeepScan
             if ($DeepScan) {
                 try {
                     $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
                     foreach ($entry in $zip.Entries) {
                         $entryName = $entry.FullName
-                        # Look for class files and check for suspicious strings
                         if ($entryName -match "\.class$") {
-                            # Read bytes and extract strings? For speed, skip full extraction.
-                            # But we can check entry name for patterns
                             if ($entryName -match $Config.PackagePatterns -or $entryName -match $Config.ModuleIndicators) {
                                 $findings += [PSCustomObject]@{
                                     Category = "SuspiciousClass"
@@ -667,7 +653,6 @@ function Scan-MinecraftInstance {
         }
     }
 
-    # Scan config files
     if (Test-Path $configDir) {
         $configFiles = Get-ChildItem -Path $configDir -Recurse -File -ErrorAction SilentlyContinue
         foreach ($cfg in $configFiles) {
@@ -687,7 +672,6 @@ function Scan-MinecraftInstance {
         }
     }
 
-    # Scan logs
     if (Test-Path $logsDir) {
         $logFiles = Get-ChildItem -Path $logsDir -Filter "*.log" -File -ErrorAction SilentlyContinue
         foreach ($log in $logFiles) {
@@ -707,19 +691,16 @@ function Scan-MinecraftInstance {
         }
     }
 
-    # Scan resourcepacks and shaderpacks (zip archives)
     $archiveDirs = @($resourcepacksDir, $shaderpacksDir)
     foreach ($dir in $archiveDirs) {
         if (Test-Path $dir) {
             $archives = Get-ChildItem -Path $dir -Filter "*.zip" -File -ErrorAction SilentlyContinue
             foreach ($archive in $archives) {
-                # shallow scan
                 if ($DeepScan) {
                     try {
                         $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
                         foreach ($entry in $zip.Entries) {
                             if ($entry.Name -match "\.mcmeta$|\.json$") {
-                                # read content
                                 $stream = $entry.Open()
                                 $reader = New-Object System.IO.StreamReader($stream)
                                 $content = $reader.ReadToEnd()
@@ -742,7 +723,6 @@ function Scan-MinecraftInstance {
         }
     }
 
-    # Look for launcher profiles (JSON)
     $profilePath = Join-Path -Path $InstancePath -ChildPath "launcher_profiles.json"
     if (Test-Path $profilePath) {
         try {
@@ -769,7 +749,6 @@ function Scan-MinecraftInstance {
 
 function Scan-SystemArtifacts {
     $findings = @()
-    # Prefetch
     if ($DeepScan -and (Test-Path "$env:windir\Prefetch")) {
         $prefetchFiles = Get-ChildItem -Path "$env:windir\Prefetch" -Filter "*.pf" -File -ErrorAction SilentlyContinue
         foreach ($pf in $prefetchFiles) {
@@ -783,7 +762,6 @@ function Scan-SystemArtifacts {
             }
         }
     }
-    # Recycle Bin (read-only)
     $recyclePath = "C:`$Recycle.Bin"
     if (Test-Path $recyclePath) {
         $items = Get-ChildItem -Path $recyclePath -Recurse -File -ErrorAction SilentlyContinue
@@ -798,10 +776,8 @@ function Scan-SystemArtifacts {
             }
         }
     }
-    # USN Journal (requires admin)
     if ($DeepScan) {
         try {
-            # Use fsutil to query USN Journal (read-only)
             $usnData = fsutil usn queryjournal C: 2>$null
             if ($LASTEXITCODE -eq 0) {
                 $findings += [PSCustomObject]@{
@@ -825,7 +801,6 @@ function Rate-Finding {
     $severity = "Informational"
     $confidence = 50
     $categories = @($Finding.Category)
-    # Look for cheat client or module names
     $text = $Finding | Out-String
     foreach ($client in $Config.CheatClientAliases) {
         if ($text -match $client) {
@@ -843,19 +818,15 @@ function Rate-Finding {
             $confidence = 60
         }
     }
-    # Check for injection indicators
     if ($text -match "-javaagent|-agentpath|-Xbootclasspath|Instrumentation|URLClassLoader|defineClass|System.load") {
         $score += 30
         $confidence = 80
     }
-    # Check for obfuscation
     if ($text -match "Base64|AES|XOR|decrypt|decode|obfuscate") {
         $score += 10
         $confidence = 50
     }
-    # Corroboration: if multiple categories, increase
     if ($categories.Count -gt 1) { $score += 10 }
-    # Determine severity
     if ($score -ge 80) { $severity = "Critical" }
     elseif ($score -ge 60) { $severity = "High" }
     elseif ($score -ge 35) { $severity = "Medium" }
@@ -929,7 +900,6 @@ $(
         $cat = $f.Category
         $path = $f.Path
         $indicator = $f.Matched
-        # Determine color based on severity
         $color = if ($sev -eq 'Critical') { 'red' } elseif ($sev -eq 'High') { 'orange' } else { 'green' }
         "<tr><td>$id</td><td>$cat</td><td style='color:$color'>$sev</td><td>$conf</td><td>$path</td><td>$indicator</td></tr>"
         $i++
@@ -1031,7 +1001,6 @@ function Write-SummaryText {
 
 Write-Host "Starting forensic scan..." -ForegroundColor Green
 
-# Find instances
 $instances = Find-MinecraftInstances -BasePath $InstancePath
 if ($instances.Count -eq 0) {
     Write-Warning "No Minecraft instances found."
@@ -1046,14 +1015,12 @@ foreach ($inst in $instances) {
     $allFindings += $instanceFindings
 }
 
-# System artifacts
 if ($DeepScan) {
     Write-Host "Performing deep system scan..." -ForegroundColor Cyan
     $sysFindings = Scan-SystemArtifacts
     $allFindings += $sysFindings
 }
 
-# Scoring
 $scoredFindings = @()
 foreach ($f in $allFindings) {
     $rating = Rate-Finding -Finding $f
@@ -1071,7 +1038,6 @@ foreach ($f in $allFindings) {
     }
 }
 
-# Generate reports
 Write-Host "Generating reports..." -ForegroundColor Green
 Write-HtmlReport -Findings $scoredFindings -Instances $instances -HashManifest $hashManifest -SystemInfo $null
 Write-JsonReport -Findings $scoredFindings
