@@ -3,7 +3,7 @@
     Minecraft-SS-Forensics.ps1 – Read‑only forensic scanner for Minecraft anti‑cheat investigations.
 
 .DESCRIPTION
-    Scans Minecraft instances, mods, logs, and system artifacts for indicators of cheating,
+    Scans a selected mods folder and system artifacts for indicators of cheating,
     injection, obfuscation, and self‑destruct evidence. Designed for authorized server‑staff
     use only. Produces HTML, JSON, CSV, and summary reports.
 
@@ -12,25 +12,12 @@
 
     This script is self‑contained – no external dependencies required.
 
-.PARAMETER InstancePath
-    Path to a specific Minecraft instance (e.g., .minecraft folder). If not provided, the
-    script will search common launcher locations.
-
 .PARAMETER OutputPath
     Folder where reports will be saved. Defaults to Desktop\Forensics_Report_<timestamp>.
 
-.PARAMETER EvidencePath
-    Optional path to an external evidence folder (e.g., a disk image or copied user data)
-    to scan instead of the live system.
-
-.PARAMETER Offline
-    Switch to force offline mode – no network requests, DNS resolutions, or external calls.
-    This is the default behavior; the switch is included for clarity.
-
 .PARAMETER DeepScan
-    Perform a more thorough scan (e.g., scan all files in archives, check USN Journal,
-    prefetch, etc.). This may take longer and requires administrator privileges for some
-    system artifacts.
+    Perform a thorough system scan (USN Journal, Prefetch, Recycle Bin, etc.).
+    This may take longer and requires administrator privileges for some artifacts.
 
 .PARAMETER HashFiles
     Calculate SHA‑256 hashes for relevant files (mods, executables, etc.) and include them
@@ -40,19 +27,14 @@
     Display this help message.
 
 .EXAMPLE
-    .\Minecraft-SS-Forensics.ps1 -InstancePath "C:\Users\Player\.minecraft" -OutputPath ".\Report"
+    .\Minecraft-SS-Forensics.ps1 -DeepScan -HashFiles
 
-    Scans the specified Minecraft instance and saves reports to the current folder.
-
-.EXAMPLE
-    .\Minecraft-SS-Forensics.ps1 -Offline -DeepScan -HashFiles
-
-    Scans all discovered instances with deep scanning and hashing, offline.
+    Scans the selected mods folder and system with deep scan and hashing.
 
 .NOTES
     Tool:    MagiciansReveal V3
     Author:  Tim$erz
-    Version: 3.0.2
+    Version: 3.0.3
     License: MIT (for authorized use only)
     Disclaimer: This tool provides indicators for analyst review. Findings are not
                conclusive proof of cheating and require human verification.
@@ -60,10 +42,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$InstancePath,
     [string]$OutputPath,
-    [string]$EvidencePath,
-    [switch]$Offline,
     [switch]$DeepScan,
     [switch]$HashFiles,
     [switch]$Help
@@ -512,14 +491,6 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     Write-Warning "Not running as Administrator. Some deep system scans (USN Journal, Prefetch, etc.) may be limited."
 }
 
-if ($EvidencePath) {
-    if (-not (Test-Path $EvidencePath -PathType Container)) {
-        Write-Error "EvidencePath directory not found: $EvidencePath"
-        exit 1
-    }
-    $InstancePath = $EvidencePath
-}
-
 #endregion
 
 #region Helper Functions
@@ -585,213 +556,88 @@ function Get-StringPatternMatches {
 
 #region Scanning Functions
 
-function Find-MinecraftInstances {
-    param([string]$BasePath)
-    $instances = @()
-    $paths = @(
-        "$env:APPDATA\.minecraft",
-        "$env:APPDATA\ModrinthApp\profiles",
-        "$env:APPDATA\PrismLauncher\instances",
-        "$env:APPDATA\.multimc\instances",
-        "$env:APPDATA\ATLauncher\instances",
-        "$env:USERPROFILE\curseforge\minecraft\Instances"
-    )
-    if ($BasePath) {
-        $base = Get-NormalizedPath -Path $BasePath
-        if (Test-Path $base) {
-            $instances += $base
-        } else {
-            Write-Warning "Base path not found: $base"
-        }
-    }
-    $commonUser = "$env:USERPROFILE"
-    $searchDirs = @(
-        "$commonUser\AppData\Roaming",
-        "$commonUser\AppData\Local",
-        "$commonUser"
-    )
-    foreach ($dir in $searchDirs) {
-        if (Test-Path $dir) {
-            $found = Get-ChildItem -Path $dir -Directory -Filter ".minecraft" -Recurse -ErrorAction SilentlyContinue
-            foreach ($f in $found) {
-                $instances += $f.FullName
-            }
-        }
-    }
-    $instances = $instances | Where-Object { Test-Path $_ } | Sort-Object -Unique
-    return $instances
-}
-
-function Scan-MinecraftInstance {
-    param([string]$InstancePath)
-    Write-Host "Scanning instance: $InstancePath" -ForegroundColor Cyan
+function Scan-ModsFolder {
+    param([string]$FolderPath)
+    Write-Host "Scanning mods folder: $FolderPath" -ForegroundColor Cyan
     $findings = @()
-    $modsDir = Join-Path -Path $InstancePath -ChildPath "mods"
-    $configDir = Join-Path -Path $InstancePath -ChildPath "config"
-    $logsDir = Join-Path -Path $InstancePath -ChildPath "logs"
-    $resourcepacksDir = Join-Path -Path $InstancePath -ChildPath "resourcepacks"
-    $shaderpacksDir = Join-Path -Path $InstancePath -ChildPath "shaderpacks"
-
-    if (Test-Path $modsDir) {
-        $jarFiles = Get-ChildItem -Path $modsDir -Filter "*.jar" -File -ErrorAction SilentlyContinue
-        foreach ($jar in $jarFiles) {
-            $hash = if ($HashFiles) { Get-FileHashIfRequested -Path $jar.FullName } else { $null }
-            $findings += [PSCustomObject]@{
-                Category = "Mods"
-                File = $jar.Name
-                Path = $jar.FullName
-                Hash = $hash
-                Size = $jar.Length
-                LastWrite = $jar.LastWriteTimeUtc
-            }
-            if ($DeepScan) {
-                try {
-                    $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
-                    foreach ($entry in $zip.Entries) {
-                        $entryName = $entry.FullName
-                        if ($entryName -match "\.class$") {
-                            if ($entryName -match $Config.PackagePatterns -or $entryName -match $Config.ModuleIndicators) {
-                                $findings += [PSCustomObject]@{
-                                    Category = "SuspiciousClass"
-                                    File = $jar.Name
-                                    Entry = $entryName
-                                    Matched = $matches[0]
-                                }
-                            }
-                        }
-                    }
-                    $zip.Dispose()
-                } catch {
-                    Write-Warning "Could not read JAR: $($jar.Name)"
-                }
-            }
-        }
+    if (-not (Test-Path $FolderPath -PathType Container)) {
+        Write-Host "❌ Folder not found: $FolderPath" -ForegroundColor Red
+        return $findings
     }
-
-    if (Test-Path $configDir) {
-        $configFiles = Get-ChildItem -Path $configDir -Recurse -File -ErrorAction SilentlyContinue
-        foreach ($cfg in $configFiles) {
-            if (-not (Test-FileSizeLimit -Path $cfg.FullName)) { continue }
-            try {
-                $content = Get-Content -Path $cfg.FullName -Raw -ErrorAction Stop
-                $matches = Get-StringPatternMatches -Content $content
-                if ($matches) {
-                    $findings += [PSCustomObject]@{
-                        Category = "Config"
-                        File = $cfg.Name
-                        Path = $cfg.FullName
-                        Matches = $matches
-                    }
-                }
-            } catch { }
-        }
+    $jarFiles = Get-ChildItem -Path $FolderPath -Filter "*.jar" -File -ErrorAction SilentlyContinue
+    if ($jarFiles.Count -eq 0) {
+        Write-Host "No JAR files found in $FolderPath" -ForegroundColor Yellow
+        return $findings
     }
-
-    if (Test-Path $logsDir) {
-        $logFiles = Get-ChildItem -Path $logsDir -Filter "*.log" -File -ErrorAction SilentlyContinue
-        foreach ($log in $logFiles) {
-            if (-not (Test-FileSizeLimit -Path $log.FullName)) { continue }
-            try {
-                $content = Get-Content -Path $log.FullName -Raw -ErrorAction Stop
-                $matches = Get-StringPatternMatches -Content $content
-                if ($matches) {
-                    $findings += [PSCustomObject]@{
-                        Category = "Logs"
-                        File = $log.Name
-                        Path = $log.FullName
-                        Matches = $matches
-                    }
-                }
-            } catch { }
+    Write-Host "Found $($jarFiles.Count) JAR files to scan." -ForegroundColor Green
+    foreach ($jar in $jarFiles) {
+        $hash = if ($HashFiles) { Get-FileHashIfRequested -Path $jar.FullName } else { $null }
+        $findings += [PSCustomObject]@{
+            Category = "Mods"
+            File = $jar.Name
+            Path = $jar.FullName
+            Hash = $hash
+            Size = $jar.Length
+            LastWrite = $jar.LastWriteTimeUtc
         }
-    }
-
-    $archiveDirs = @($resourcepacksDir, $shaderpacksDir)
-    foreach ($dir in $archiveDirs) {
-        if (Test-Path $dir) {
-            $archives = Get-ChildItem -Path $dir -Filter "*.zip" -File -ErrorAction SilentlyContinue
-            foreach ($archive in $archives) {
-                if ($DeepScan) {
-                    try {
-                        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
-                        foreach ($entry in $zip.Entries) {
-                            if ($entry.Name -match "\.mcmeta$|\.json$") {
-                                $stream = $entry.Open()
-                                $reader = New-Object System.IO.StreamReader($stream)
-                                $content = $reader.ReadToEnd()
-                                $reader.Close()
-                                $matches = Get-StringPatternMatches -Content $content
-                                if ($matches) {
-                                    $findings += [PSCustomObject]@{
-                                        Category = "Archive"
-                                        File = $archive.Name
-                                        Entry = $entry.FullName
-                                        Matches = $matches
-                                    }
-                                }
-                            }
-                        }
-                        $zip.Dispose()
-                    } catch { }
-                }
-            }
-        }
-    }
-
-    $profilePath = Join-Path -Path $InstancePath -ChildPath "launcher_profiles.json"
-    if (Test-Path $profilePath) {
+        # Check inside JAR for suspicious strings (basic)
         try {
-            $json = Get-Content -Path $profilePath -Raw | ConvertFrom-Json
-            if ($json.profiles) {
-                foreach ($prof in $json.profiles.PSObject.Properties) {
-                    $name = $prof.Name
-                    $jvmArgs = $prof.Value.javaArgs
-                    if ($jvmArgs -match "-javaagent|-agentpath|-Xbootclasspath") {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+            foreach ($entry in $zip.Entries) {
+                $entryName = $entry.FullName
+                if ($entryName -match "\.class$") {
+                    if ($entryName -match $Config.PackagePatterns -or $entryName -match $Config.ModuleIndicators) {
                         $findings += [PSCustomObject]@{
-                            Category = "LauncherProfile"
-                            Profile = $name
-                            JvmArgs = $jvmArgs
-                            Matched = "Suspicious JVM argument"
+                            Category = "SuspiciousClass"
+                            File = $jar.Name
+                            Entry = $entryName
+                            Matched = $matches[0]
                         }
                     }
                 }
             }
-        } catch { }
+            $zip.Dispose()
+        } catch {
+            Write-Warning "Could not read JAR: $($jar.Name)"
+        }
     }
-
     return $findings
 }
 
 function Scan-SystemArtifacts {
+    Write-Host "Scanning system artifacts (self‑destruct evidence)..." -ForegroundColor Magenta
     $findings = @()
-    if ($DeepScan -and (Test-Path "$env:windir\Prefetch")) {
-        $prefetchFiles = Get-ChildItem -Path "$env:windir\Prefetch" -Filter "*.pf" -File -ErrorAction SilentlyContinue
-        foreach ($pf in $prefetchFiles) {
-            if ($pf.Name -match "javaw|minecraft|forge|fabric|cheat|hack|client") {
-                $findings += [PSCustomObject]@{
-                    Category = "Prefetch"
-                    File = $pf.Name
-                    Path = $pf.FullName
-                    LastWrite = $pf.LastWriteTimeUtc
-                }
-            }
-        }
-    }
-    $recyclePath = "C:`$Recycle.Bin"
-    if (Test-Path $recyclePath) {
-        $items = Get-ChildItem -Path $recyclePath -Recurse -File -ErrorAction SilentlyContinue
-        foreach ($item in $items) {
-            if ($item.Name -match "\.jar$|\.exe$|\.dll$") {
-                $findings += [PSCustomObject]@{
-                    Category = "RecycleBin"
-                    File = $item.Name
-                    Path = $item.FullName
-                    LastWrite = $item.LastWriteTimeUtc
-                }
-            }
-        }
-    }
     if ($DeepScan) {
+        # Prefetch
+        if (Test-Path "$env:windir\Prefetch") {
+            $prefetchFiles = Get-ChildItem -Path "$env:windir\Prefetch" -Filter "*.pf" -File -ErrorAction SilentlyContinue
+            foreach ($pf in $prefetchFiles) {
+                if ($pf.Name -match "javaw|minecraft|forge|fabric|cheat|hack|client") {
+                    $findings += [PSCustomObject]@{
+                        Category = "Prefetch"
+                        File = $pf.Name
+                        Path = $pf.FullName
+                        LastWrite = $pf.LastWriteTimeUtc
+                    }
+                }
+            }
+        }
+        # Recycle Bin
+        $recyclePath = "C:`$Recycle.Bin"
+        if (Test-Path $recyclePath) {
+            $items = Get-ChildItem -Path $recyclePath -Recurse -File -ErrorAction SilentlyContinue
+            foreach ($item in $items) {
+                if ($item.Name -match "\.jar$|\.exe$|\.dll$") {
+                    $findings += [PSCustomObject]@{
+                        Category = "RecycleBin"
+                        File = $item.Name
+                        Path = $item.FullName
+                        LastWrite = $item.LastWriteTimeUtc
+                    }
+                }
+            }
+        }
+        # USN Journal (requires admin)
         try {
             $usnData = fsutil usn queryjournal C: 2>$null
             if ($LASTEXITCODE -eq 0) {
@@ -802,6 +648,8 @@ function Scan-SystemArtifacts {
                 }
             }
         } catch { }
+    } else {
+        Write-Host "Skipping system artifact scan (use -DeepScan to enable)." -ForegroundColor Yellow
     }
     return $findings
 }
@@ -861,7 +709,7 @@ function Rate-Finding {
 #region Report Generation
 
 function Write-HtmlReport {
-    param($Findings, $Instances, $HashManifest, $SystemInfo)
+    param($Findings, $HashManifest, $SystemInfo)
     $html = @"
 <!DOCTYPE html>
 <html>
@@ -889,18 +737,8 @@ th { background-color: #f2f2f2; }
 <hr>
 <div class="section">
 <h2>Executive Summary</h2>
-<p>This report contains findings from a forensic scan of Minecraft instances. All findings require analyst review.</p>
-<p><strong>Instances Scanned:</strong> $($Instances.Count)</p>
+<p>This report contains findings from a forensic scan. All findings require analyst review.</p>
 <p><strong>Total Findings:</strong> $($Findings.Count)</p>
-</div>
-<div class="section">
-<h2>Collection Scope</h2>
-<ul>
-<li>Instance Path: $($Instances -join ', ')</li>
-<li>Deep Scan: $DeepScan</li>
-<li>Hashing: $HashFiles</li>
-<li>Offline Mode: $Offline</li>
-</ul>
 </div>
 <div class="section">
 <h2>Findings</h2>
@@ -918,29 +756,6 @@ $(
         $color = if ($sev -eq 'Critical') { 'red' } elseif ($sev -eq 'High') { 'orange' } else { 'green' }
         "<tr><td>$id</td><td>$cat</td><td style='color:$color'>$sev</td><td>$conf</td><td>$path</td><td>$indicator</td></tr>"
         $i++
-    }
-)
-</table>
-</div>
-<div class="section">
-<h2>Mod Inventory</h2>
-<ul>
-$(
-    $mods = $Findings | Where-Object { $_.Category -eq "Mods" } | Select-Object -ExpandProperty File -Unique
-    foreach ($m in $mods) { "<li>$m</li>" }
-)
-</ul>
-</div>
-<div class="section">
-<h2>Timeline</h2>
-<table>
-<tr><th>Timestamp (UTC)</th><th>Event</th><th>File</th></tr>
-$(
-    $timeline = $Findings | Sort-Object LastWrite -Descending | Select-Object -First 100
-    foreach ($t in $timeline) {
-        if ($t.LastWrite) {
-            "<tr><td>$($t.LastWrite.ToString('yyyy-MM-dd HH:mm:ss'))</td><td>$($t.Category)</td><td>$($t.File)</td></tr>"
-        }
     }
 )
 </table>
@@ -988,7 +803,7 @@ function Write-HashesCsv {
 }
 
 function Write-SummaryText {
-    param($Findings, $Instances)
+    param($Findings)
     $summaryPath = Join-Path -Path $OutputPath -ChildPath "forensics-summary.txt"
     $lines = @()
     $lines += "MagiciansReveal V3 – Minecraft Forensic Summary"
@@ -997,7 +812,6 @@ function Write-SummaryText {
     $lines += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
     $lines += "Host: $env:COMPUTERNAME"
     $lines += "User: $env:USERNAME"
-    $lines += "Instances: $($Instances -join ', ')"
     $lines += "Total Findings: $($Findings.Count)"
     $severities = $Findings | Group-Object Severity | ForEach-Object { "$($_.Name): $($_.Count)" }
     $lines += "Severity breakdown: $($severities -join ', ')"
@@ -1025,7 +839,7 @@ function Show-ConsoleBanner {
    ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝ ╚═════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝
 "@ -ForegroundColor Cyan
     Write-Host "       ── 𝕸𝖆𝖌𝖎𝖈𝖎𝖆𝖓𝖘𝕽𝖊𝖛𝖊𝖆𝖑 𝖁3 ──" -ForegroundColor Magenta
-    Write-Host "       Author: Tim`$erz    Version: 3.0.2" -ForegroundColor Gray
+    Write-Host "       Author: Tim`$erz    Version: 3.0.3" -ForegroundColor Gray
     Write-Host "       Read‑only forensic scanner for Minecraft anti‑cheat investigations." -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -1055,17 +869,17 @@ function Show-DetailedFindings {
 }
 
 function Ask-ReportGeneration {
-    param($Findings, $Instances, $OutputPath)
+    param($Findings)
     Write-Host "`n📄 Generate detailed report files? (y/n)" -ForegroundColor Yellow -NoNewline
     $response = Read-Host
     if ($response -eq 'y' -or $response -eq 'Y') {
         Write-Host "Generating reports in: $OutputPath" -ForegroundColor Green
-        Write-HtmlReport -Findings $Findings -Instances $Instances -HashManifest $null -SystemInfo $null
+        Write-HtmlReport -Findings $Findings -HashManifest $null -SystemInfo $null
         Write-JsonReport -Findings $Findings
         Write-CsvReport -Findings $Findings
         Write-TimelineCsv -Findings $Findings
         Write-HashesCsv -Findings $Findings
-        Write-SummaryText -Findings $Findings -Instances $Instances
+        Write-SummaryText -Findings $Findings
         Write-Host "Reports saved to: $OutputPath" -ForegroundColor Cyan
     } else {
         Write-Host "Skipping report file generation. Only console output displayed." -ForegroundColor Gray
@@ -1073,7 +887,7 @@ function Ask-ReportGeneration {
 }
 
 function Show-ConsoleSummary {
-    param($Findings, $Instances, $OutputPath)
+    param($Findings)
     $totalFindings = $Findings.Count
     $severityGroups = $Findings | Group-Object Severity
     $criticalCount = ($severityGroups | Where-Object { $_.Name -eq 'Critical' }).Count
@@ -1088,7 +902,6 @@ function Show-ConsoleSummary {
     Write-Host "║" -ForegroundColor DarkCyan
     Write-Host "║  Minecraft PID      : $($mcPid)" -ForegroundColor Gray
     Write-Host "║  Minecraft uptime   : $($uptime.Hours)h $($uptime.Minutes)m $($uptime.Seconds)s" -ForegroundColor Gray
-    Write-Host "║  Instances scanned  : $($Instances.Count)" -ForegroundColor Gray
     Write-Host "║  Total findings     : $totalFindings" -ForegroundColor Gray
     Write-Host "║  Critical           : $criticalCount" -ForegroundColor Red
     Write-Host "║  High               : $highCount" -ForegroundColor Yellow
@@ -1114,15 +927,6 @@ function Show-ConsoleSummary {
             Write-Host "  ... and $($highCrit.Count - 10) more (see detailed list above)" -ForegroundColor Gray
         }
     }
-
-    $jvmIssues = $Findings | Where-Object { $_.Category -eq 'LauncherProfile' -or $_.Category -eq 'USNJournal' }
-    if ($jvmIssues) {
-        Write-Host "`n⚡ JVM & SYSTEM ARTIFACTS" -ForegroundColor Magenta
-        Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
-        foreach ($issue in $jvmIssues | Select-Object -First 5) {
-            Write-Host "  • $($issue.File) : $($issue.Matched)" -ForegroundColor Yellow
-        }
-    }
 }
 #endregion
 
@@ -1133,27 +937,32 @@ Show-ConsoleBanner
 Write-Host "Minecraft process found: PID $mcPid (started $mcStart, uptime $($uptime.Hours)h $($uptime.Minutes)m $($uptime.Seconds)s)" -ForegroundColor Green
 Write-Host ""
 
+# Ask for the mods folder path
+Write-Host "Enter the path to your Minecraft mods folder: " -NoNewline
+$modsFolder = Read-Host
+if ([string]::IsNullOrWhiteSpace($modsFolder)) {
+    Write-Host "No folder provided. Exiting." -ForegroundColor Red
+    exit 1
+}
+$modsFolder = Get-NormalizedPath -Path $modsFolder
+
 Write-Host "Starting forensic scan..." -ForegroundColor Green
 
-$instances = Find-MinecraftInstances -BasePath $InstancePath
-if ($instances.Count -eq 0) {
-    Write-Warning "No Minecraft instances found."
-    $instances = @()
-}
+# Scan mods folder
+$modFindings = Scan-ModsFolder -FolderPath $modsFolder
 
-$allFindings = @()
-$hashManifest = @()
-
-foreach ($inst in $instances) {
-    $instanceFindings = Scan-MinecraftInstance -InstancePath $inst
-    $allFindings += $instanceFindings
-}
-
-if ($DeepScan) {
-    Write-Host "Performing deep system scan..." -ForegroundColor Cyan
+# Ask if user wants system scan (self-destruct)
+Write-Host "`nDo you want to scan the entire system for self‑destruct evidence (Prefetch, Recycle Bin, USN Journal)? (y/n)" -ForegroundColor Yellow -NoNewline
+$sysResponse = Read-Host
+if ($sysResponse -eq 'y' -or $sysResponse -eq 'Y') {
+    $DeepScan = $true
     $sysFindings = Scan-SystemArtifacts
-    $allFindings += $sysFindings
+} else {
+    $sysFindings = @()
+    Write-Host "Skipping system scan." -ForegroundColor Gray
 }
+
+$allFindings = $modFindings + $sysFindings
 
 # Score all findings
 $scoredFindings = @()
@@ -1177,10 +986,10 @@ foreach ($f in $allFindings) {
 Show-DetailedFindings -Findings $scoredFindings
 
 # Show summary with PID and options
-Show-ConsoleSummary -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
+Show-ConsoleSummary -Findings $scoredFindings
 
 # Ask about report generation
-Ask-ReportGeneration -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
+Ask-ReportGeneration -Findings $scoredFindings
 
 Write-Host "`n✅ Scan completed. Press any key to exit..." -ForegroundColor Green
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
