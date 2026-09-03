@@ -1005,7 +1005,6 @@ function Show-ConsoleBanner {
 function Show-ConsoleReport {
     param($Findings, $Instances, $OutputPath)
 
-    # Summary counts
     $totalFindings = $Findings.Count
     $severityGroups = $Findings | Group-Object Severity
     $criticalCount = ($severityGroups | Where-Object { $_.Name -eq 'Critical' }).Count
@@ -1029,13 +1028,13 @@ function Show-ConsoleReport {
     Write-Host "║  Reports saved to: $OutputPath" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor DarkCyan
 
-    # List suspicious findings with high/critical
     if ($criticalCount -gt 0 -or $highCount -gt 0) {
         Write-Host "`n🚨 HIGH/CRITICAL FINDINGS" -ForegroundColor Red
         Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
         $highCrit = $Findings | Where-Object { $_.Severity -in @('High','Critical') }
         foreach ($f in $highCrit | Select-Object -First 10) {
-            Write-Host "  [$($f.Severity)] " -NoNewline -ForegroundColor ($f.Severity -eq 'Critical' ? 'Red' : 'Yellow')
+            $color = if ($f.Severity -eq 'Critical') { 'Red' } else { 'Yellow' }
+            Write-Host "  [$($f.Severity)] " -NoNewline -ForegroundColor $color
             Write-Host "$($f.Category) " -NoNewline -ForegroundColor White
             Write-Host "- $($f.File) " -NoNewline -ForegroundColor Gray
             Write-Host "→ $($f.Matched)" -ForegroundColor Cyan
@@ -1045,7 +1044,6 @@ function Show-ConsoleReport {
         }
     }
 
-    # List any JVM issues
     $jvmIssues = $Findings | Where-Object { $_.Category -eq 'LauncherProfile' -or $_.Category -eq 'USNJournal' }
     if ($jvmIssues) {
         Write-Host "`n⚡ JVM & SYSTEM ARTIFACTS" -ForegroundColor Magenta
