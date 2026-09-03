@@ -76,7 +76,6 @@ if ($Help) {
 
 #region Configuration (Editable)
 $script:Config = @{
-    # Cheat-client aliases (case-insensitive, normalized)
     CheatClientAliases = @(
         "LiquidBounce", "LiquidBounce Nextgen", "Wurst", "Meteor", "BleachHack", "Impact",
         "Inertia", "Aristois", "Vape", "Future", "RusherHack", "Pyro", "Boze", "Kami Blue",
@@ -91,7 +90,6 @@ $script:Config = @{
         "XenonClient", "GypsyClient", "Dqrkis", "WalksyOptimizer", "LWFH Crystal",
         "catlean", "AsteriaClient", "198Macros"
     )
-    # Module indicators (weak/medium/strong based on context)
     ModuleIndicators = @(
         "KillAura", "AimAssist", "TriggerBot", "AutoClicker", "Reach", "Velocity",
         "AntiKnockback", "Fly", "Speed", "Bhop", "Strafe", "Scaffold", "Tower", "Step",
@@ -102,45 +100,37 @@ $script:Config = @{
         "LegitAssist", "Hitboxes", "AutoCrystal", "CrystalAura", "Surround", "SelfTrap",
         "AnchorAura", "BedAura", "AutoMace", "ShieldBreaker"
     )
-    # Weak modules (low confidence alone)
     WeakModules = @("ESP", "Speed", "FullBright", "Hitboxes")
-    # Package/class patterns (regex)
     PackagePatterns = @(
         "\b(?:net|com|org|io|xyz)\.(?:minecraft|mc|client)\.(?:cheat|hack|mod|module)\b",
         "\b(?:me|club|wtf|cc)\.(?:[a-z]+)\.(?:client|hack)\b"
     )
-    # Domain patterns (regex, offline match only)
     DomainPatterns = @(
         "\b(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|io|xyz|club|gg|rip|top|tk|ml|ga|cf|us|biz|info|name|tv|me|eu)\b",
         "vape\.gg|vapeclient\.com|meteorclient\.com|liquidbounce\.net|wurstclient\.net",
         "sigmaclient\.com|novoware\.cc|gamesense\.pw|osirisclient\.com|prestigeclient\.vip",
         "dqrkis\.xyz|orchard\.gg|intent\.store|rise\.today|riseclient\.com"
     )
-    # File-name patterns for suspicious files
     SuspiciousFilePatterns = @(
         ".*hack.*\.jar", ".*cheat.*\.jar", ".*client.*\.jar", ".*inject.*\.dll",
         ".*agent.*\.jar", ".*loader.*\.jar"
     )
-    # Known legitimate mods (to reduce false positives)
     KnownLegitMods = @(
         "fabric-api", "fabric-loader", "forge", "neoforge", "quilt-loader",
         "sodium", "lithium", "phosphor", "iris", "modmenu", "cloth-config",
         "architectury", "krypton", "ferritecore", "lazydfu", "starlight",
         "entityculling", "dynamicfps", "spark", "servercore", "vmp"
     )
-    # Allowlisted domains (offline comparison only)
     AllowlistDomains = @(
         "modrinth.com", "curseforge.com", "minecraft.net", "mojang.com",
         "github.com", "fabricmc.net", "quiltmc.org", "neoforged.net"
     )
-    # Allowlisted paths (system and common)
     AllowlistPaths = @(
         "$env:ProgramFiles\Java",
         "$env:ProgramFiles\Common Files",
         "$env:windir\System32",
         "$env:windir\SysWOW64"
     )
-    # Severity weights for scoring
     SeverityWeights = @{
         "Informational" = 0
         "Low"          = 10
@@ -148,9 +138,7 @@ $script:Config = @{
         "High"         = 60
         "Critical"     = 90
     }
-    # File size limits (bytes)
     MaxScanFileSize = 100MB
-    # Regex rules for string extraction
     RegexRules = @(
         @{ Name = "Webhook"; Pattern = 'https?://discord(?:app)?\.com/api/webhooks/[\w-]+/[\w-]+' },
         @{ Name = "DiscordInvite"; Pattern = 'discord(?:\.gg|app\.com/invite)/[\w-]+' },
@@ -158,7 +146,6 @@ $script:Config = @{
         @{ Name = "IPv4"; Pattern = '\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b' },
         @{ Name = "URL"; Pattern = 'https?://[^\s"<>]+' }
     )
-    # Output format settings
     OutputFormat = @{
         HtmlTitle = "Minecraft Forensic Report"
         CsvDelimiter = ","
@@ -997,7 +984,84 @@ function Write-SummaryText {
 
 #endregion
 
+#region Console Display
+
+function Show-ConsoleBanner {
+    Clear-Host
+    Write-Host @"
+   ███╗   ███╗ █████╗  ██████╗ ██╗ ██████╗██╗ █████╗ ███╗   ██╗███████╗
+   ████╗ ████║██╔══██╗██╔════╝ ██║██╔════╝██║██╔══██╗████╗  ██║██╔════╝
+   ██╔████╔██║███████║██║  ███╗██║██║     ██║███████║██╔██╗ ██║███████╗
+   ██║╚██╔╝██║██╔══██║██║   ██║██║██║     ██║██╔══██║██║╚██╗██║╚════██║
+   ██║ ╚═╝ ██║██║  ██║╚██████╔╝██║╚██████╗██║██║  ██║██║ ╚████║███████║
+   ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝ ╚═════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝
+"@ -ForegroundColor Cyan
+    Write-Host "       ── 𝕸𝖆𝖌𝖎𝖈𝖎𝖆𝖓𝖘𝕽𝖊𝖛𝖊𝖆𝖑 𝖁3 ──" -ForegroundColor Magenta
+    Write-Host "       Author: Tim`$erz    Version: 3.0.1" -ForegroundColor Gray
+    Write-Host "       Read‑only forensic scanner for Minecraft anti‑cheat investigations." -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Show-ConsoleReport {
+    param($Findings, $Instances, $OutputPath)
+
+    # Summary counts
+    $totalFindings = $Findings.Count
+    $severityGroups = $Findings | Group-Object Severity
+    $criticalCount = ($severityGroups | Where-Object { $_.Name -eq 'Critical' }).Count
+    $highCount = ($severityGroups | Where-Object { $_.Name -eq 'High' }).Count
+    $mediumCount = ($severityGroups | Where-Object { $_.Name -eq 'Medium' }).Count
+    $lowCount = ($severityGroups | Where-Object { $_.Name -eq 'Low' }).Count
+    $infoCount = ($severityGroups | Where-Object { $_.Name -eq 'Informational' }).Count
+
+    Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor DarkCyan
+    Write-Host "║  " -NoNewline -ForegroundColor DarkCyan
+    Write-Host "📊 SCAN SUMMARY" -ForegroundColor White
+    Write-Host "║" -ForegroundColor DarkCyan
+    Write-Host "║  Instances scanned   : $($Instances.Count)" -ForegroundColor Gray
+    Write-Host "║  Total findings      : $totalFindings" -ForegroundColor Gray
+    Write-Host "║  Critical            : $criticalCount" -ForegroundColor Red
+    Write-Host "║  High                : $highCount" -ForegroundColor Yellow
+    Write-Host "║  Medium              : $mediumCount" -ForegroundColor DarkYellow
+    Write-Host "║  Low                 : $lowCount" -ForegroundColor Green
+    Write-Host "║  Informational       : $infoCount" -ForegroundColor DarkGray
+    Write-Host "║" -ForegroundColor DarkCyan
+    Write-Host "║  Reports saved to: $OutputPath" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor DarkCyan
+
+    # List suspicious findings with high/critical
+    if ($criticalCount -gt 0 -or $highCount -gt 0) {
+        Write-Host "`n🚨 HIGH/CRITICAL FINDINGS" -ForegroundColor Red
+        Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+        $highCrit = $Findings | Where-Object { $_.Severity -in @('High','Critical') }
+        foreach ($f in $highCrit | Select-Object -First 10) {
+            Write-Host "  [$($f.Severity)] " -NoNewline -ForegroundColor ($f.Severity -eq 'Critical' ? 'Red' : 'Yellow')
+            Write-Host "$($f.Category) " -NoNewline -ForegroundColor White
+            Write-Host "- $($f.File) " -NoNewline -ForegroundColor Gray
+            Write-Host "→ $($f.Matched)" -ForegroundColor Cyan
+        }
+        if ($highCrit.Count -gt 10) {
+            Write-Host "  ... and $($highCrit.Count - 10) more (see full report)" -ForegroundColor Gray
+        }
+    }
+
+    # List any JVM issues
+    $jvmIssues = $Findings | Where-Object { $_.Category -eq 'LauncherProfile' -or $_.Category -eq 'USNJournal' }
+    if ($jvmIssues) {
+        Write-Host "`n⚡ JVM & SYSTEM ARTIFACTS" -ForegroundColor Magenta
+        Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+        foreach ($issue in $jvmIssues | Select-Object -First 5) {
+            Write-Host "  • $($issue.File) : $($issue.Matched)" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "`n✅ Scan completed. Press any key to exit..." -ForegroundColor Green
+}
+#endregion
+
 #region Main Execution
+
+Show-ConsoleBanner
 
 Write-Host "Starting forensic scan..." -ForegroundColor Green
 
@@ -1046,8 +1110,8 @@ Write-TimelineCsv -Findings $scoredFindings
 Write-HashesCsv -Findings $scoredFindings
 Write-SummaryText -Findings $scoredFindings -Instances $instances
 
-Write-Host "Scan complete. Reports saved to: $OutputPath" -ForegroundColor Green
-Write-Host "Press any key to exit..." -ForegroundColor Gray
+Show-ConsoleReport -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
+
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 #endregion
