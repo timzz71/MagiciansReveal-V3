@@ -124,7 +124,7 @@ function Write-FindingsToConsole {
     foreach($f in $Findings){$c=switch($f.Severity){'Critical'{'Red'}'High'{'Magenta'}'Medium'{'Yellow'}'Low'{'DarkYellow'}default{'Gray'}}; Write-Host ('  [{0}] {1}' -f $f.Severity,$f.IndicatorMatched) -ForegroundColor $c; Write-Host ('    Category: {0} | Confidence: {1}% | Assessment: {2}' -f $f.Category,$f.Confidence,$f.EvidenceAssessment) -ForegroundColor White; if($f.AbsolutePath){Write-Host ('    Path: {0}' -f $f.AbsolutePath) -ForegroundColor DarkGray}; Write-Host ('    Verification: {0}' -f $f.RecommendedAnalystVerification) -ForegroundColor DarkGray; Write-Host ''}
 }
 function Confirm-Authorization {
-    if($Authorized){return $true}; $answer=Read-Host 'This is an authorized server-staff investigation. Type AUTHORIZED to continue'; return ($answer -ceq 'AUTHORIZED')
+    if($Authorized){return $true}; $answer=Read-Host 'This is an authorized server-staff investigation. Type yes to continue'; return ($answer -ceq 'yes')
 }
 function Show-RunningMinecraft {
     try{$p=@(Get-CimInstance Win32_Process -ErrorAction Stop|Where-Object{$_.Name -match '(?i)^(java|javaw|minecraft|launcher).*\.exe$'});if($p.Count){foreach($x in $p){$started='unknown';try{$started=$x.CreationDate}catch{};Write-Host ('Minecraft process found: PID {0} ({1})' -f $x.ProcessId,$started) -ForegroundColor Green}}else{Write-Host 'No running Minecraft process was detected.' -ForegroundColor DarkGray}}catch{Add-Unsupported 'Running-process inspection' $_.Exception.Message}
