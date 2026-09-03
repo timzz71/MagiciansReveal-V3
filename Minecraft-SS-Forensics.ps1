@@ -17,7 +17,7 @@
     script will search common launcher locations.
 
 .PARAMETER OutputPath
-    Folder where reports will be saved. Defaults to .\Forensics_Report_<timestamp>.
+    Folder where reports will be saved. Defaults to Desktop\Forensics_Report_<timestamp>.
 
 .PARAMETER EvidencePath
     Optional path to an external evidence folder (e.g., a disk image or copied user data)
@@ -52,7 +52,7 @@
 .NOTES
     Tool:    MagiciansReveal V3
     Author:  Tim$erz
-    Version: 3.0.1
+    Version: 3.0.2
     License: MIT (for authorized use only)
     Disclaimer: This tool provides indicators for analyst review. Findings are not
                conclusive proof of cheating and require human verification.
@@ -472,17 +472,45 @@ function Confirm-Authorization {
     Write-Host "Authorization confirmed. Starting scan..." -ForegroundColor Green
 }
 
+function Check-MinecraftRunning {
+    $mcProc = Get-Process javaw -ErrorAction SilentlyContinue
+    if (-not $mcProc) { $mcProc = Get-Process java -ErrorAction SilentlyContinue }
+    if (-not $mcProc) {
+        Write-Host "❌ Minecraft is not running (no javaw/java process found)." -ForegroundColor Red
+        Write-Host "Please launch Minecraft and run this tool again." -ForegroundColor Yellow
+        Write-Host "Press any key to exit..." -ForegroundColor Gray
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        exit 1
+    }
+    return $mcProc
+}
+
 Confirm-Authorization
+
+$mcProc = Check-MinecraftRunning
+$mcPid = $mcProc[0].Id
+$mcStart = $mcProc[0].StartTime
+$uptime = (Get-Date) - $mcStart
+
+# Set output path to Desktop by default to avoid permission issues
+if (-not $OutputPath) {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $OutputPath = Join-Path -Path $desktop -ChildPath "Forensics_Report_$timestamp"
+}
+
+# Ensure the directory exists
+try {
+    New-Item -ItemType Directory -Path $OutputPath -Force -ErrorAction Stop | Out-Null
+} catch {
+    Write-Warning "Could not create output directory at $OutputPath. Using TEMP folder."
+    $OutputPath = Join-Path -Path $env:TEMP -ChildPath "Forensics_Report_$timestamp"
+    New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+}
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Warning "Not running as Administrator. Some deep system scans (USN Journal, Prefetch, etc.) may be limited."
 }
-
-if (-not $OutputPath) {
-    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $OutputPath = Join-Path -Path $PWD.Path -ChildPath "Forensics_Report_$timestamp"
-}
-New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 if ($EvidencePath) {
     if (-not (Test-Path $EvidencePath -PathType Container)) {
@@ -997,14 +1025,55 @@ function Show-ConsoleBanner {
    ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝ ╚═════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝
 "@ -ForegroundColor Cyan
     Write-Host "       ── 𝕸𝖆𝖌𝖎𝖈𝖎𝖆𝖓𝖘𝕽𝖊𝖛𝖊𝖆𝖑 𝖁3 ──" -ForegroundColor Magenta
-    Write-Host "       Author: Tim`$erz    Version: 3.0.1" -ForegroundColor Gray
+    Write-Host "       Author: Tim`$erz    Version: 3.0.2" -ForegroundColor Gray
     Write-Host "       Read‑only forensic scanner for Minecraft anti‑cheat investigations." -ForegroundColor DarkGray
     Write-Host ""
 }
 
-function Show-ConsoleReport {
-    param($Findings, $Instances, $OutputPath)
+function Show-DetailedFindings {
+    param($Findings)
+    if ($Findings.Count -eq 0) {
+        Write-Host "`n✅ No suspicious findings detected." -ForegroundColor Green
+        return
+    }
+    Write-Host "`n🔍 DETAILED FINDINGS" -ForegroundColor Cyan
+    Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    foreach ($f in $Findings) {
+        $color = if ($f.Severity -eq 'Critical') { 'Red' } elseif ($f.Severity -eq 'High') { 'Yellow' } elseif ($f.Severity -eq 'Medium') { 'Magenta' } else { 'Gray' }
+        Write-Host "  [$($f.Severity)] " -NoNewline -ForegroundColor $color
+        Write-Host "$($f.Category) " -NoNewline -ForegroundColor White
+        Write-Host "- $($f.File) " -NoNewline -ForegroundColor Gray
+        Write-Host "→ $($f.Matched)" -ForegroundColor Cyan
+        if ($f.Path) {
+            Write-Host "    Path: $($f.Path)" -ForegroundColor DarkGray
+        }
+        if ($f.Confidence) {
+            Write-Host "    Confidence: $($f.Confidence)%" -ForegroundColor DarkGray
+        }
+        Write-Host ""
+    }
+}
 
+function Ask-ReportGeneration {
+    param($Findings, $Instances, $OutputPath)
+    Write-Host "`n📄 Generate detailed report files? (y/n)" -ForegroundColor Yellow -NoNewline
+    $response = Read-Host
+    if ($response -eq 'y' -or $response -eq 'Y') {
+        Write-Host "Generating reports in: $OutputPath" -ForegroundColor Green
+        Write-HtmlReport -Findings $Findings -Instances $Instances -HashManifest $null -SystemInfo $null
+        Write-JsonReport -Findings $Findings
+        Write-CsvReport -Findings $Findings
+        Write-TimelineCsv -Findings $Findings
+        Write-HashesCsv -Findings $Findings
+        Write-SummaryText -Findings $Findings -Instances $Instances
+        Write-Host "Reports saved to: $OutputPath" -ForegroundColor Cyan
+    } else {
+        Write-Host "Skipping report file generation. Only console output displayed." -ForegroundColor Gray
+    }
+}
+
+function Show-ConsoleSummary {
+    param($Findings, $Instances, $OutputPath)
     $totalFindings = $Findings.Count
     $severityGroups = $Findings | Group-Object Severity
     $criticalCount = ($severityGroups | Where-Object { $_.Name -eq 'Critical' }).Count
@@ -1013,23 +1082,25 @@ function Show-ConsoleReport {
     $lowCount = ($severityGroups | Where-Object { $_.Name -eq 'Low' }).Count
     $infoCount = ($severityGroups | Where-Object { $_.Name -eq 'Informational' }).Count
 
-    Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor DarkCyan
+    Write-Host "`n╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor DarkCyan
     Write-Host "║  " -NoNewline -ForegroundColor DarkCyan
     Write-Host "📊 SCAN SUMMARY" -ForegroundColor White
     Write-Host "║" -ForegroundColor DarkCyan
-    Write-Host "║  Instances scanned   : $($Instances.Count)" -ForegroundColor Gray
-    Write-Host "║  Total findings      : $totalFindings" -ForegroundColor Gray
-    Write-Host "║  Critical            : $criticalCount" -ForegroundColor Red
-    Write-Host "║  High                : $highCount" -ForegroundColor Yellow
-    Write-Host "║  Medium              : $mediumCount" -ForegroundColor DarkYellow
-    Write-Host "║  Low                 : $lowCount" -ForegroundColor Green
-    Write-Host "║  Informational       : $infoCount" -ForegroundColor DarkGray
+    Write-Host "║  Minecraft PID      : $($mcPid)" -ForegroundColor Gray
+    Write-Host "║  Minecraft uptime   : $($uptime.Hours)h $($uptime.Minutes)m $($uptime.Seconds)s" -ForegroundColor Gray
+    Write-Host "║  Instances scanned  : $($Instances.Count)" -ForegroundColor Gray
+    Write-Host "║  Total findings     : $totalFindings" -ForegroundColor Gray
+    Write-Host "║  Critical           : $criticalCount" -ForegroundColor Red
+    Write-Host "║  High               : $highCount" -ForegroundColor Yellow
+    Write-Host "║  Medium             : $mediumCount" -ForegroundColor DarkYellow
+    Write-Host "║  Low                : $lowCount" -ForegroundColor Green
+    Write-Host "║  Informational      : $infoCount" -ForegroundColor DarkGray
     Write-Host "║" -ForegroundColor DarkCyan
-    Write-Host "║  Reports saved to: $OutputPath" -ForegroundColor Cyan
+    Write-Host "║  Output folder      : $OutputPath" -ForegroundColor DarkGray
     Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor DarkCyan
 
     if ($criticalCount -gt 0 -or $highCount -gt 0) {
-        Write-Host "`n🚨 HIGH/CRITICAL FINDINGS" -ForegroundColor Red
+        Write-Host "`n🚨 HIGH/CRITICAL FINDINGS (highlighted)" -ForegroundColor Red
         Write-Host "─────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
         $highCrit = $Findings | Where-Object { $_.Severity -in @('High','Critical') }
         foreach ($f in $highCrit | Select-Object -First 10) {
@@ -1040,7 +1111,7 @@ function Show-ConsoleReport {
             Write-Host "→ $($f.Matched)" -ForegroundColor Cyan
         }
         if ($highCrit.Count -gt 10) {
-            Write-Host "  ... and $($highCrit.Count - 10) more (see full report)" -ForegroundColor Gray
+            Write-Host "  ... and $($highCrit.Count - 10) more (see detailed list above)" -ForegroundColor Gray
         }
     }
 
@@ -1052,14 +1123,15 @@ function Show-ConsoleReport {
             Write-Host "  • $($issue.File) : $($issue.Matched)" -ForegroundColor Yellow
         }
     }
-
-    Write-Host "`n✅ Scan completed. Press any key to exit..." -ForegroundColor Green
 }
 #endregion
 
 #region Main Execution
 
 Show-ConsoleBanner
+
+Write-Host "Minecraft process found: PID $mcPid (started $mcStart, uptime $($uptime.Hours)h $($uptime.Minutes)m $($uptime.Seconds)s)" -ForegroundColor Green
+Write-Host ""
 
 Write-Host "Starting forensic scan..." -ForegroundColor Green
 
@@ -1083,6 +1155,7 @@ if ($DeepScan) {
     $allFindings += $sysFindings
 }
 
+# Score all findings
 $scoredFindings = @()
 foreach ($f in $allFindings) {
     $rating = Rate-Finding -Finding $f
@@ -1100,16 +1173,16 @@ foreach ($f in $allFindings) {
     }
 }
 
-Write-Host "Generating reports..." -ForegroundColor Green
-Write-HtmlReport -Findings $scoredFindings -Instances $instances -HashManifest $hashManifest -SystemInfo $null
-Write-JsonReport -Findings $scoredFindings
-Write-CsvReport -Findings $scoredFindings
-Write-TimelineCsv -Findings $scoredFindings
-Write-HashesCsv -Findings $scoredFindings
-Write-SummaryText -Findings $scoredFindings -Instances $instances
+# Display detailed findings
+Show-DetailedFindings -Findings $scoredFindings
 
-Show-ConsoleReport -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
+# Show summary with PID and options
+Show-ConsoleSummary -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
 
+# Ask about report generation
+Ask-ReportGeneration -Findings $scoredFindings -Instances $instances -OutputPath $OutputPath
+
+Write-Host "`n✅ Scan completed. Press any key to exit..." -ForegroundColor Green
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 #endregion
